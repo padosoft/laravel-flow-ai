@@ -1,0 +1,58 @@
+{
+    "name": "padosoft/laravel-flow-ai",
+    "description": "Agentic AI layer for padosoft/laravel-flow: LLM prompt nodes, MCP client and server (expose flows as MCP tools), bounded agent nodes, AI flow builder and Flow Advisor. Part of the Laravel Flow 2.0 suite.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": ["laravel", "workflow", "ai", "llm", "mcp", "agents", "orchestration", "laravel-flow"],
+    "authors": [
+        {
+            "name": "Lorenzo Padovani",
+            "email": "lorenzo.padovani@padosoft.com"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.18",
+        "orchestra/testbench": "^11.0",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^11.5|^12.5"
+    },
+    "suggest": {
+        "padosoft/laravel-flow": "The core workflow engine this package plugs into."
+    },
+    "autoload": {
+        "psr-4": {
+            "Padosoft\\LaravelFlowAI\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Padosoft\\LaravelFlowAI\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Padosoft\\LaravelFlowAI\\LaravelFlowAIServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true
+    },
+    "scripts": {
+        "analyse": "phpstan analyse --no-progress --memory-limit=512M",
+        "format:test": "pint --test",
+        "quality": [
+            "@format:test",
+            "@analyse",
+            "@test"
+        ],
+        "test": "phpunit --testsuite Unit"
+    }
+}
