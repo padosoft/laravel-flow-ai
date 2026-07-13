@@ -10,10 +10,15 @@ use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
+use Padosoft\LaravelFlow\Contracts\RunRepository;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
+use Padosoft\LaravelFlowAI\Contracts\McpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
+use Padosoft\LaravelFlowAI\Mcp\Authorization\DenyAllMcpToolAuthorizer;
+use Padosoft\LaravelFlowAI\Mcp\FlowToolServer;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransportFactory;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
@@ -90,6 +95,24 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                 timeoutSeconds: is_numeric($mcpConfig['timeout_seconds'] ?? null) && (int) $mcpConfig['timeout_seconds'] >= 1
                     ? (int) $mcpConfig['timeout_seconds']
                     : 10,
+            );
+        });
+
+        // Deny-by-default, same non-negotiable posture as core's
+        // DashboardActionAuthorizer -> DenyAllAuthorizer: a fresh install
+        // must never expose a flow as an MCP tool without an explicit host
+        // application policy.
+        $this->app->bind(McpToolAuthorizer::class, DenyAllMcpToolAuthorizer::class);
+
+        $this->app->bind(FlowToolServer::class, function (Container $app): FlowToolServer {
+            /** @var array<string, mixed> $mcpConfig */
+            $mcpConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.mcp', []);
+
+            return new FlowToolServer(
+                definitions: $app->make(DefinitionRepository::class),
+                runs: $app->make(RunRepository::class),
+                authorizer: $app->make(McpToolAuthorizer::class),
+                exposedFlowNames: array_values(array_filter((array) ($mcpConfig['exposed_flows'] ?? []), 'is_string')),
             );
         });
     }
