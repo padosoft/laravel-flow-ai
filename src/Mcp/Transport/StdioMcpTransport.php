@@ -118,8 +118,22 @@ final class StdioMcpTransport implements McpTransport
                 throw new McpConnectionException("MCP server returned a JSON-RPC error (code {$code}): {$message}");
             }
 
+            if (! array_key_exists('result', $decoded)) {
+                throw new McpConnectionException('MCP server response contained neither a `result` nor an `error` member.');
+            }
+
+            // A malformed/non-object `result` (a bare string, number, etc.)
+            // must SURFACE as a transport failure, not be silently coerced
+            // into an empty array — doing the latter would masquerade a
+            // broken server response as a successful call that returned
+            // nothing, which is indistinguishable from a legitimate empty
+            // result and hides the real protocol violation from the caller.
+            if (! is_array($decoded['result'])) {
+                throw new McpConnectionException('MCP server returned a non-object `result` — this transport only supports MCP responses shaped as a JSON object.');
+            }
+
             /** @var array<string, mixed> $result */
-            $result = is_array($decoded['result'] ?? null) ? $decoded['result'] : [];
+            $result = $decoded['result'];
 
             return $result;
         }

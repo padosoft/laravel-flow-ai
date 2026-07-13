@@ -70,6 +70,32 @@ while (($line = fgets(STDIN)) !== false) {
         fflush(STDOUT);
     }
 
+    // Proves a malformed, non-object `result` (a bare scalar) is surfaced as
+    // a transport failure, not silently coerced into an empty successful
+    // result.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'scalar_result') {
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => 'not-an-object',
+        ], JSON_THROW_ON_ERROR)."\n");
+        fflush(STDOUT);
+
+        continue;
+    }
+
+    // Proves a response with neither a `result` nor an `error` member (a
+    // spec-violating message) is surfaced as a transport failure too.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'no_result_no_error') {
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+        ], JSON_THROW_ON_ERROR)."\n");
+        fflush(STDOUT);
+
+        continue;
+    }
+
     $result = match ($method) {
         'initialize' => ['protocolVersion' => '2025-06-18', 'serverInfo' => ['name' => 'fixture', 'version' => '1.0.0']],
         'tools/list' => ['tools' => [['name' => 'echo', 'inputSchema' => ['type' => 'object']]]],

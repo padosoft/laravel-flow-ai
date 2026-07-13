@@ -84,6 +84,34 @@ final class StdioMcpTransportIntegrationTest extends TestCase
         }
     }
 
+    public function test_a_malformed_non_object_result_over_a_real_subprocess_throws_a_connection_exception(): void
+    {
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5);
+        $client = new McpClient($transport);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $client->callTool('echo', ['mode' => 'scalar_result']);
+        } finally {
+            $client->close();
+        }
+    }
+
+    public function test_a_response_with_neither_result_nor_error_over_a_real_subprocess_throws_a_connection_exception(): void
+    {
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5);
+        $client = new McpClient($transport);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $client->callTool('echo', ['mode' => 'no_result_no_error']);
+        } finally {
+            $client->close();
+        }
+    }
+
     public function test_the_overall_request_timeout_fires_despite_continuous_live_notification_traffic(): void
     {
         // The fixture floods notifications for 40 * 50ms = 2s and never

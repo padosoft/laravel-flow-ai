@@ -182,6 +182,36 @@ final class PolicyEngineTest extends TestCase
         $this->assertTrue($decision->allowed, 'a trailing FQDN dot does not change host identity');
     }
 
+    public function test_stdio_pseudo_host_allowlist_is_case_sensitive(): void
+    {
+        // Round-4 review: a `stdio:{command}` pseudo-host names a LOCAL
+        // COMMAND to spawn (see McpClientNode), not a DNS hostname — RFC
+        // 4343 case-insensitivity must NOT apply here, or an allowlist entry
+        // for one executable would also authorize a differently-cased one on
+        // a case-sensitive filesystem, silently widening a control meant to
+        // gate arbitrary local code execution.
+        $engine = new PolicyEngine(egressAllowlist: ['stdio:trusted-server']);
+
+        $exactCase = $engine->authorize('ai.mcp.tool', 'stdio:trusted-server');
+        $differentCase = $engine->authorize('ai.mcp.tool', 'stdio:Trusted-Server');
+
+        $this->assertTrue($exactCase->allowed);
+        $this->assertFalse($differentCase->allowed, 'a stdio: pseudo-host must be matched case-sensitively, unlike a DNS hostname');
+    }
+
+    public function test_stdio_pseudo_host_does_not_match_a_regular_hostname_pattern(): void
+    {
+        // A `*.suffix` glob (or any plain hostname pattern) is meaningless
+        // for a local command name — a stdio: target must only ever match
+        // another stdio:-prefixed allowlist entry, never fall through to
+        // hostname-glob semantics.
+        $engine = new PolicyEngine(egressAllowlist: ['*.example.com']);
+
+        $decision = $engine->authorize('ai.mcp.tool', 'stdio:example.com');
+
+        $this->assertFalse($decision->allowed);
+    }
+
     public function test_node_type_permission_is_checked_before_rate_limit(): void
     {
         // A denied node type must not consume rate-limit budget — cheapest
