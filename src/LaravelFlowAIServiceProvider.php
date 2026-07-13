@@ -9,12 +9,22 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
+use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 
 /**
  * @internal
  */
 final class LaravelFlowAIServiceProvider extends ServiceProvider
 {
+    /**
+     * Node handler classes this package contributes to core's registry.
+     *
+     * @var list<class-string>
+     */
+    private const NODE_HANDLERS = [
+        LlmPromptNode::class,
+    ];
+
     public function register(): void
     {
         $this->mergeConfigFrom(
@@ -37,8 +47,37 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         });
     }
 
+    /**
+     * Append this package's node handlers to core's `laravel-flow.nodes.handlers`
+     * config so `NodeRegistry` (a lazily-resolved singleton in core's own
+     * provider) picks them up. Done in `boot()`, NOT `register()`: core's own
+     * `mergeConfigFrom('laravel-flow')` runs during core's `register()`, and
+     * Laravel's `mergeConfigFrom()` is a SHALLOW, top-level `array_merge()` —
+     * if this package instead wrote to `laravel-flow.nodes.*` during ITS OWN
+     * `register()` and happened to run BEFORE core's provider (package
+     * registration order is not guaranteed), core's later merge would treat
+     * the whole `nodes` key as already-set and skip merging its own defaults
+     * under it, silently dropping sibling keys such as `nodes.discovery`.
+     * Laravel guarantees EVERY provider's `register()` completes before ANY
+     * provider's `boot()` starts, so deferring to `boot()` guarantees core's
+     * config is fully merged first, regardless of provider list order.
+     */
+    private function registerNodeHandlers(): void
+    {
+        /** @var ConfigRepository $config */
+        $config = $this->app->make(ConfigRepository::class);
+        $existing = (array) $config->get('laravel-flow.nodes.handlers', []);
+
+        $config->set(
+            'laravel-flow.nodes.handlers',
+            array_values(array_unique([...$existing, ...self::NODE_HANDLERS])),
+        );
+    }
+
     public function boot(): void
     {
+        $this->registerNodeHandlers();
+
         if (! $this->app->runningInConsole()) {
             return;
         }
