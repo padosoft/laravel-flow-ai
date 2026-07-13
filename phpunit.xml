@@ -4,10 +4,19 @@
          bootstrap="vendor/autoload.php"
          colors="true"
          cacheDirectory=".phpunit.cache"
-         defaultTestSuite="Unit">
+         defaultTestSuite="All">
     <testsuites>
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Contract">
+            <directory>tests/Contract</directory>
+        </testsuite>
+        <!-- Default: running bare `phpunit` (outside `composer test`) runs
+             every suite, so contract tests are never silently skipped. -->
+        <testsuite name="All">
+            <directory>tests/Unit</directory>
+            <directory>tests/Contract</directory>
         </testsuite>
     </testsuites>
     <source>

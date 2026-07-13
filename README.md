@@ -29,6 +29,44 @@
 composer require padosoft/laravel-flow-ai
 ```
 
+> **Development-time note**: `padosoft/laravel-flow` has no tagged release yet, so this package's `composer.json` resolves it via a local `path` repository pointing at `../padosoft-laravel-flow` (a true sibling checkout, one directory up from this package). This means `padosoft/laravel-flow-ai` is not `composer require`-able outside a monorepo-adjacent dev setup until core cuts its first tagged release — Composer's `repositories` block is only honored while developing directly on this package, not when it is installed as a dependency by a host application. Once core tags a release, this constraint switches to a normal SemVer version range and the path repository is removed.
+
+## Configuration
+
+Publish the config file to customize the built-in Anthropic driver:
+
+```bash
+php artisan vendor:publish --tag=laravel-flow-ai-config
+```
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `LARAVEL_FLOW_AI_ANTHROPIC_API_KEY` | _(empty)_ | Anthropic API key. Left empty by default — a host app that only binds `Padosoft\LaravelFlowAI\Llm\FakeDriver` for its own tests is never forced to set this. |
+| `LARAVEL_FLOW_AI_ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1/messages` | Anthropic Messages API endpoint. |
+| `LARAVEL_FLOW_AI_ANTHROPIC_API_VERSION` | `2023-06-01` | Anthropic API version header. |
+| `LARAVEL_FLOW_AI_ANTHROPIC_TIMEOUT_SECONDS` | `30` | Request timeout in seconds. |
+
+## LLM client contract
+
+Every AI-pack node that talks to a language model depends on `Padosoft\LaravelFlowAI\Contracts\LlmClient`, never a concrete provider SDK directly:
+
+```php
+use Padosoft\LaravelFlowAI\Contracts\LlmClient;
+use Padosoft\LaravelFlowAI\Llm\LlmRequest;
+
+$response = app(LlmClient::class)->complete(new LlmRequest(
+    prompt: 'Summarize this run in one sentence.',
+    model: 'claude-sonnet-5',
+));
+
+$response->content;         // raw completion text
+$response->promptTokens;    // usage, always present
+$response->completionTokens;
+$response->totalTokens();
+```
+
+The package binds `LlmClient` to `Padosoft\LaravelFlowAI\Llm\AnthropicDriver` by default. Swap the binding in your own service provider to point at a different implementation. `Padosoft\LaravelFlowAI\Llm\FakeDriver` — a deterministic, no-network driver constructed with a queue of canned `LlmResponse`s — is available for your own application's tests.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

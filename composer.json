@@ -10,18 +10,25 @@
             "email": "lorenzo.padovani@padosoft.com"
         }
     ],
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../padosoft-laravel-flow",
+            "options": {
+                "symlink": false
+            }
+        }
+    ],
     "require": {
         "php": "^8.3",
-        "illuminate/support": "^13.0"
+        "illuminate/support": "^13.0",
+        "padosoft/laravel-flow": "dev-main"
     },
     "require-dev": {
         "laravel/pint": "^1.18",
         "orchestra/testbench": "^11.0",
         "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^11.5|^12.5"
-    },
-    "suggest": {
-        "padosoft/laravel-flow": "The core workflow engine this package plugs into."
     },
     "autoload": {
         "psr-4": {
@@ -53,6 +60,6 @@
             "@analyse",
             "@test"
         ],
-        "test": "phpunit --testsuite Unit"
+        "test": "phpunit --testsuite All"
     }
 }
