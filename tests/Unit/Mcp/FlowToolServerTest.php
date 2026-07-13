@@ -103,6 +103,16 @@ final class FlowToolServerTest extends TestCase
         );
     }
 
+    public function test_a_repeated_exposed_flow_name_produces_only_one_tool_entry(): void
+    {
+        $this->publishEchoFlow('echo-flow');
+        $server = $this->allowAllServer(['echo-flow', 'echo-flow']);
+
+        $names = array_column($server->listTools(), 'name');
+
+        $this->assertSame(['echo-flow', FlowToolServer::STATUS_CHECK_TOOL_NAME], $names);
+    }
+
     public function test_golden_schema_for_a_published_flow(): void
     {
         $this->publishEchoFlow('echo-flow');

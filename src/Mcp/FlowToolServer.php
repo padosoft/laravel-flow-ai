@@ -62,14 +62,21 @@ final class FlowToolServer
     public const STATUS_CHECK_TOOL_NAME = 'flow.check_run_status';
 
     /**
-     * @param  list<string>  $exposedFlowNames  candidate flow names this server MAY expose — see class doc for the full visibility gate
+     * @var list<string>
+     */
+    private readonly array $exposedFlowNames;
+
+    /**
+     * @param  list<string>  $exposedFlowNames  candidate flow names this server MAY expose — see class doc for the full visibility gate. Deduplicated defensively: a host config that accidentally repeats a name must never produce a duplicate tool entry from `listTools()`.
      */
     public function __construct(
         private readonly DefinitionRepository $definitions,
         private readonly RunRepository $runs,
         private readonly McpToolAuthorizer $authorizer,
-        private readonly array $exposedFlowNames = [],
-    ) {}
+        array $exposedFlowNames = [],
+    ) {
+        $this->exposedFlowNames = array_values(array_unique($exposedFlowNames));
+    }
 
     /**
      * @param  array<string, mixed>|null  $actor
@@ -105,6 +112,36 @@ final class FlowToolServer
     }
 
     /**
+     * Same visibility rule `listTools()` uses to decide whether to advertise
+     * `flow.check_run_status` at all (canListTools() plus at least one
+     * exposed+authorized+published flow), but short-circuits on the first
+     * match instead of building every tool descriptor (schema derivation,
+     * repository reads for flows past the first visible one) — the cost
+     * `listTools()` pays is wasted work for a mere gate check on every
+     * status poll.
+     *
+     * @param  array<string, mixed>|null  $actor
+     */
+    private function hasAnyVisibleFlow(?array $actor): bool
+    {
+        if (! $this->authorizer->canListTools($actor)) {
+            return false;
+        }
+
+        foreach ($this->exposedFlowNames as $name) {
+            if (! $this->authorizer->canInvokeTool($name, $actor)) {
+                continue;
+            }
+
+            if ($this->definitions->latest($name, StoredDefinition::STATUS_PUBLISHED) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param  array<string, mixed>  $arguments
      * @param  array<string, mixed>|null  $actor
      * @return array{content: list<array<string, mixed>>, isError: bool}
@@ -114,12 +151,11 @@ final class FlowToolServer
     public function callTool(string $name, array $arguments, ?array $actor = null): array
     {
         if ($name === self::STATUS_CHECK_TOOL_NAME) {
-            // Gated by the SAME visibility rule `listTools()` uses to decide
-            // whether to advertise this tool at all (canListTools() plus at
-            // least one exposed+authorized+published flow) — otherwise a
-            // deny-all/empty-allowlist install would still let a caller probe
-            // arbitrary run ids' statuses through a tool it can never see.
-            if ($this->listTools($actor) === []) {
+            // Gated the same way `listTools()` decides whether to advertise
+            // this tool at all — otherwise a deny-all/empty-allowlist install
+            // would still let a caller probe arbitrary run ids' statuses
+            // through a tool it can never see.
+            if (! $this->hasAnyVisibleFlow($actor)) {
                 throw new McpToolNotFoundException("Unknown MCP tool [{$name}].");
             }
 
@@ -279,7 +315,7 @@ final class FlowToolServer
     {
         return [
             'name' => self::STATUS_CHECK_TOOL_NAME,
-            'description' => 'Check the current status of a flow run started via one of this server\'s other tools, by run id — use this to poll a run that returned a pending_approval result.',
+            'description' => 'Check the current status of a flow run by run id — use this to poll a run that returned a pending_approval result.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => ['run_id' => ['type' => 'string', 'description' => 'The run_id returned by a prior pending_approval tool result.']],
