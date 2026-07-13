@@ -6,6 +6,7 @@ namespace Padosoft\LaravelFlowAI;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
@@ -14,7 +15,6 @@ use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
-use Throwable;
 
 /**
  * @internal
@@ -95,14 +95,17 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         $config = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.guardrails', []);
 
         // The cache repository is a core Laravel service, always bound in a
-        // real application; the try/catch is a defensive fallback for a
-        // stripped-down test harness that never bound it, not an expected
-        // production path — falling back to null simply makes the rate-limit
-        // gate a no-op (this package's established "permissive when
-        // unconfigured" posture), it never breaks node execution.
+        // real application; this narrowly catches ONLY "the binding isn't
+        // registered" (a stripped-down test harness that never bound it, not
+        // an expected production path — falling back to null simply makes
+        // the rate-limit gate a no-op, this package's established
+        // "permissive when unconfigured" posture). A DIFFERENT exception
+        // (e.g. the bound cache driver itself failing to construct — a real
+        // misconfiguration) must surface, not be silently swallowed into a
+        // disabled rate limit.
         try {
             $cache = $app->make(CacheRepository::class);
-        } catch (Throwable) {
+        } catch (BindingResolutionException) {
             $cache = null;
         }
 
