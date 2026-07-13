@@ -7,6 +7,7 @@ namespace Padosoft\LaravelFlowAI\Mcp\Transport;
 use JsonException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\McpClient;
+use stdClass;
 
 /**
  * MCP over stdio: spawns `$command` as a child process and speaks JSON-RPC
@@ -147,17 +148,35 @@ final class StdioMcpTransport implements McpTransport
         $line = $this->readLine($deadline);
 
         try {
-            /** @var mixed $decoded */
+            // Decoded TWICE on purpose. First WITHOUT the associative flag,
+            // purely to check the top-level shape: PHP's associative
+            // json_decode() maps BOTH `{}` and `[]` (and any other JSON
+            // array, e.g. `[1,2]`) to a PHP array, making a real JSON-RPC
+            // object indistinguishable from a malformed JSON ARRAY response
+            // — a JSON array would silently pass an `is_array()` check and
+            // then be treated as an id-less notification, hiding the real
+            // protocol violation until the overall deadline times out.
+            // Decoding to objects first lets an object come back as stdClass
+            // (accepted) while any JSON array comes back as a PHP array
+            // (never a stdClass, rejected). A shallow `(array) $stdClass`
+            // cast is NOT enough once the shape check passes — it leaves
+            // NESTED objects (e.g. a `result` member) as stdClass instances
+            // instead of recursively-decoded arrays, breaking every
+            // downstream `is_array($decoded['result'])`-style check — so the
+            // second, associative decode below produces the actual value
+            // this method returns.
+            $shapeCheck = json_decode($line, false, 512, JSON_THROW_ON_ERROR);
+
+            if (! ($shapeCheck instanceof stdClass)) {
+                throw new McpConnectionException('MCP server response was valid JSON but not a JSON-RPC object (got '.get_debug_type($shapeCheck).').');
+            }
+
+            /** @var array<string, mixed> $decoded */
             $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
             throw new McpConnectionException("MCP server returned a malformed JSON-RPC response: {$e->getMessage()}", previous: $e);
         }
 
-        if (! is_array($decoded)) {
-            throw new McpConnectionException('MCP server response was valid JSON but not a JSON-RPC object.');
-        }
-
-        /** @var array<string, mixed> $decoded */
         return $decoded;
     }
 

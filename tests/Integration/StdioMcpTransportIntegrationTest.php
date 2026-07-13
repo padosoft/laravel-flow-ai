@@ -84,6 +84,25 @@ final class StdioMcpTransportIntegrationTest extends TestCase
         }
     }
 
+    public function test_a_top_level_json_array_response_over_a_real_subprocess_throws_a_connection_exception(): void
+    {
+        // Regression test: json_decode(..., true) maps both `{}` and a JSON
+        // array to a PHP array, so a naive is_array() check on the raw
+        // decoded response line would silently accept a malformed JSON
+        // array as a valid-looking id-less notification and hang until the
+        // overall timeout, instead of failing fast with a clear exception.
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5);
+        $client = new McpClient($transport);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $client->callTool('echo', ['mode' => 'array_response']);
+        } finally {
+            $client->close();
+        }
+    }
+
     public function test_a_malformed_non_object_result_over_a_real_subprocess_throws_a_connection_exception(): void
     {
         [$command, $args] = $this->fixtureServerCommand();

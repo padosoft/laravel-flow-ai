@@ -70,6 +70,20 @@ while (($line = fgets(STDIN)) !== false) {
         fflush(STDOUT);
     }
 
+    // Proves the WHOLE response line being a JSON ARRAY (not an object at
+    // all) is rejected too — a stricter, earlier layer than the
+    // scalar_result case below: json_decode(..., true) maps both `{}` and
+    // `[]`/`[1,2]` to a PHP array, so a naive is_array() check on the
+    // top-level decode would silently accept this as a valid-looking
+    // id-less notification and hang until the overall timeout instead of
+    // failing fast.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'array_response') {
+        fwrite(STDOUT, json_encode([1, 2, 3], JSON_THROW_ON_ERROR)."\n");
+        fflush(STDOUT);
+
+        continue;
+    }
+
     // Proves a malformed, non-object `result` (a bare scalar) is surfaced as
     // a transport failure, not silently coerced into an empty successful
     // result.
