@@ -63,7 +63,7 @@ final class NoNetworkCallsInTestSuiteTest extends TestCase
     }
 
     /**
-     * Pins the tokenizer's coverage of every class-reference FORM PHP
+     * Pins the tokenizer's coverage of every class-reference form PHP
      * actually produces for a `new` expression, per PHP 8's tokenization
      * rules (verified directly against this package's installed PHP): an
      * unqualified name (`T_STRING`), a namespace-qualified name
