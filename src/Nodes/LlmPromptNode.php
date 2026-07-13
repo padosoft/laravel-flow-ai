@@ -115,7 +115,7 @@ final class LlmPromptNode implements FlowNodeHandler
             $promptTokens += $response->promptTokens;
             $completionTokens += $response->completionTokens;
 
-            $decoded = $this->tryDecodeObject($response->content);
+            [$decoded, $lastError] = $this->tryDecodeObject($response->content);
 
             if ($decoded !== null) {
                 return NodeResult::success(
@@ -127,8 +127,6 @@ final class LlmPromptNode implements FlowNodeHandler
                     $this->businessImpact($response->model, $promptTokens, $completionTokens),
                 );
             }
-
-            $lastError = 'response was not a valid JSON object';
         }
 
         return NodeResult::failed(new RuntimeException(
@@ -151,9 +149,9 @@ final class LlmPromptNode implements FlowNodeHandler
     }
 
     /**
-     * @return array<string, mixed>|null
+     * @return array{0: array<string, mixed>|null, 1: string|null} [decoded value on success, specific failure reason on rejection — fed back into the next retry prompt so self-repair has something concrete to act on]
      */
-    private function tryDecodeObject(string $content): ?array
+    private function tryDecodeObject(string $content): array
     {
         try {
             // Decoded WITHOUT the associative flag on purpose: PHP's
@@ -164,16 +162,18 @@ final class LlmPromptNode implements FlowNodeHandler
             // PHP array (never an object) — the only way to reject an empty
             // JSON ARRAY while still accepting a legitimately empty `{}`.
             $decoded = json_decode($content, false, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            return null;
+        } catch (JsonException $e) {
+            return [null, "response was not valid JSON: {$e->getMessage()}"];
         }
 
         if (! ($decoded instanceof stdClass)) {
-            return null;
+            return [null, 'response was valid JSON but not an object (got '.get_debug_type($decoded).')'];
         }
 
-        /** @var array<string, mixed> */
-        return (array) $decoded;
+        /** @var array<string, mixed> $value */
+        $value = (array) $decoded;
+
+        return [$value, null];
     }
 
     /**

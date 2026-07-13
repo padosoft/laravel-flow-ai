@@ -69,6 +69,22 @@ final class LlmPromptNodeTest extends TestCase
         $this->assertCount(2, $driver->requests());
         $this->assertStringNotContainsString('invalid', $driver->requests()[0]->prompt, 'first attempt has no error prefix');
         $this->assertStringContainsString('invalid', $driver->requests()[1]->prompt, 'retry prompt feeds the validation error back');
+        $this->assertStringContainsString('not valid JSON', $driver->requests()[1]->prompt, 'the retry prompt carries the SPECIFIC decode failure reason, not a generic message');
+    }
+
+    public function test_retry_prompt_carries_the_specific_not_an_object_reason(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '[1,2,3]', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        // Distinguishes "valid JSON but the wrong shape" from "not JSON at
+        // all" — a more actionable self-repair hint for the model.
+        $this->assertStringContainsString('not an object', $driver->requests()[1]->prompt);
     }
 
     public function test_a_json_array_is_rejected_as_not_an_object(): void
