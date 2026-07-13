@@ -5,15 +5,19 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Tests\Unit;
 
 use Orchestra\Testbench\TestCase;
+use Padosoft\LaravelFlow\LaravelFlowServiceProvider;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
 use Padosoft\LaravelFlowAI\LaravelFlowAIServiceProvider;
-use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
 
 final class ServiceProviderTest extends TestCase
 {
     protected function getPackageProviders($app): array
     {
-        return [LaravelFlowAIServiceProvider::class];
+        // Core's provider is required too: LlmPromptNode auto-resolves core's
+        // PayloadRedactor via the container, and a real deployment always has
+        // both providers registered together (this package requires core).
+        return [LaravelFlowServiceProvider::class, LaravelFlowAIServiceProvider::class];
     }
 
     public function test_provider_is_loaded(): void
@@ -29,9 +33,12 @@ final class ServiceProviderTest extends TestCase
         );
     }
 
-    public function test_llm_client_resolves_to_the_anthropic_driver_by_default(): void
+    public function test_llm_client_resolves_to_a_guarded_client_by_default(): void
     {
-        $this->assertInstanceOf(AnthropicDriver::class, $this->app->make(LlmClient::class));
+        // F-PR3: the binding shape changed from the raw AnthropicDriver to a
+        // GuardedLlmClient wrapping it, so every real consumer gets policy
+        // enforcement transparently. See GuardedLlmClientTest for behavior.
+        $this->assertInstanceOf(GuardedLlmClient::class, $this->app->make(LlmClient::class));
     }
 
     public function test_llm_client_is_a_singleton(): void

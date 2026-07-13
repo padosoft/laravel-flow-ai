@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI;
 
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
+use InvalidArgumentException;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 
@@ -32,19 +37,87 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
             'laravel-flow-ai',
         );
 
+        // Bound to the GUARDED client, not the raw driver: every real
+        // consumer of LlmClient::class (currently LlmPromptNode, resolved
+        // through the container) gets policy enforcement transparently,
+        // without needing to know guardrails exist. Node type 'ai.llm.prompt'
+        // is hardcoded here because this binding currently has exactly one
+        // consumer; if a future node type also needs LLM access through this
+        // contract, give IT its own GuardedLlmClient instance (constructed
+        // explicitly for that node, not through this shared singleton) rather
+        // than trying to make one binding serve multiple node identities.
         $this->app->singleton(LlmClient::class, function (Container $app): LlmClient {
-            /** @var array<string, mixed> $config */
-            $config = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.anthropic', []);
+            /** @var array<string, mixed> $anthropicConfig */
+            $anthropicConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.anthropic', []);
+            $baseUrl = (string) ($anthropicConfig['base_url'] ?? 'https://api.anthropic.com/v1/messages');
 
-            return new AnthropicDriver(
-                apiKey: (string) ($config['api_key'] ?? ''),
-                baseUrl: (string) ($config['base_url'] ?? 'https://api.anthropic.com/v1/messages'),
-                apiVersion: (string) ($config['api_version'] ?? '2023-06-01'),
-                timeoutSeconds: is_numeric($config['timeout_seconds'] ?? null) && (int) $config['timeout_seconds'] >= 1
-                    ? (int) $config['timeout_seconds']
+            $driver = new AnthropicDriver(
+                apiKey: (string) ($anthropicConfig['api_key'] ?? ''),
+                baseUrl: $baseUrl,
+                apiVersion: (string) ($anthropicConfig['api_version'] ?? '2023-06-01'),
+                timeoutSeconds: is_numeric($anthropicConfig['timeout_seconds'] ?? null) && (int) $anthropicConfig['timeout_seconds'] >= 1
+                    ? (int) $anthropicConfig['timeout_seconds']
                     : 30,
             );
+
+            return new GuardedLlmClient(
+                inner: $driver,
+                policy: $this->policyEngine($app),
+                nodeType: 'ai.llm.prompt',
+                targetHost: $this->requireHost($baseUrl),
+            );
         });
+    }
+
+    /**
+     * Fails fast at container-resolution time on a malformed `base_url`,
+     * rather than silently deriving an empty target host that would produce
+     * confusing egress-allowlist denials (or, worse, an ALWAYS-EMPTY host
+     * that an allowlist entry could accidentally match) later, at CALL time,
+     * far from the actual misconfiguration.
+     */
+    private function requireHost(string $baseUrl): string
+    {
+        $host = parse_url($baseUrl, PHP_URL_HOST);
+
+        if (! is_string($host) || $host === '') {
+            throw new InvalidArgumentException(
+                "laravel-flow-ai.anthropic.base_url [{$baseUrl}] has no parseable host — expected an absolute URL such as https://api.anthropic.com/v1/messages."
+            );
+        }
+
+        return $host;
+    }
+
+    private function policyEngine(Container $app): PolicyEngine
+    {
+        /** @var array<string, mixed> $config */
+        $config = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.guardrails', []);
+
+        // The cache repository is a core Laravel service, always bound in a
+        // real application; this narrowly catches ONLY "the binding isn't
+        // registered" (a stripped-down test harness that never bound it, not
+        // an expected production path — falling back to null simply makes
+        // the rate-limit gate a no-op, this package's established
+        // "permissive when unconfigured" posture). A DIFFERENT exception
+        // (e.g. the bound cache driver itself failing to construct — a real
+        // misconfiguration) must surface, not be silently swallowed into a
+        // disabled rate limit.
+        try {
+            $cache = $app->make(CacheRepository::class);
+        } catch (BindingResolutionException) {
+            $cache = null;
+        }
+
+        return new PolicyEngine(
+            allowedNodeTypes: array_values(array_filter((array) ($config['allowed_node_types'] ?? []), 'is_string')),
+            egressAllowlist: array_values(array_filter((array) ($config['egress_allowlist'] ?? []), 'is_string')),
+            rateLimitMaxAttempts: is_numeric($config['rate_limit_max_attempts'] ?? null) ? (int) $config['rate_limit_max_attempts'] : 0,
+            rateLimitDecaySeconds: is_numeric($config['rate_limit_decay_seconds'] ?? null) && (int) $config['rate_limit_decay_seconds'] >= 1
+                ? (int) $config['rate_limit_decay_seconds']
+                : 60,
+            cache: $cache,
+        );
     }
 
     /**

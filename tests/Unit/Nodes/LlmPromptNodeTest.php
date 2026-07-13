@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Tests\Unit\Nodes;
 
 use Padosoft\LaravelFlow\Node\NodeContext;
+use Padosoft\LaravelFlow\Persistence\KeyBasedPayloadRedactor;
+use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\FakeDriver;
 use Padosoft\LaravelFlowAI\Llm\LlmResponse;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
@@ -225,6 +228,98 @@ final class LlmPromptNodeTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
 
         new LlmPromptNode($driver, maxAttempts: 0);
+    }
+
+    public function test_outbound_payload_is_redacted(): void
+    {
+        // F-PR3: a redacted-list KEY wired into a template variable must
+        // never reach the rendered prompt actually sent to the LLM client —
+        // asserted on the payload the FAKE client actually received.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $redactor = new KeyBasedPayloadRedactor(enabled: true, keys: ['secret'], replacement: '[redacted]');
+        $node = new LlmPromptNode($driver, redactor: $redactor);
+
+        $node->execute($this->context([
+            'template' => 'The secret is: {{secret}}. Topic: {{topic}}.',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'sk-super-sensitive-123', 'topic' => 'flows'],
+        ]));
+
+        $sentPrompt = $driver->requests()[0]->prompt;
+        $this->assertStringNotContainsString('sk-super-sensitive-123', $sentPrompt, 'the secret value never reaches the outbound request');
+        $this->assertStringContainsString('[redacted]', $sentPrompt);
+        $this->assertStringContainsString('flows', $sentPrompt, 'a non-redacted variable still renders normally');
+    }
+
+    public function test_no_redactor_means_variables_pass_through_unchanged(): void
+    {
+        // Direct construction (bypassing the container) with no redactor is
+        // a valid, deliberate opt-out — e.g. isolated node-logic tests that
+        // don't care about redaction at all (every OTHER test in this file).
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $node->execute($this->context([
+            'template' => 'Value: {{secret}}',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'not-actually-redacted-without-a-redactor'],
+        ]));
+
+        $this->assertStringContainsString('not-actually-redacted-without-a-redactor', $driver->requests()[0]->prompt);
+    }
+
+    public function test_a_disabled_redactor_leaves_variables_unchanged(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $redactor = new KeyBasedPayloadRedactor(enabled: false, keys: ['secret']);
+        $node = new LlmPromptNode($driver, redactor: $redactor);
+
+        $node->execute($this->context([
+            'template' => 'Value: {{secret}}',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'still-here-when-redaction-is-disabled'],
+        ]));
+
+        $this->assertStringContainsString('still-here-when-redaction-is-disabled', $driver->requests()[0]->prompt);
+    }
+
+    public function test_a_policy_denial_returns_failed_immediately_not_uncaught(): void
+    {
+        // Round-1 review (Codex): PolicyDeniedException thrown by a guarded
+        // client must be caught by the node itself and mapped to
+        // NodeResult::failed(), not left to escape execute() uncaught —
+        // this node is tested in isolation here, with NO core NodeExecutor
+        // in the call stack to catch it as an outer safety net.
+        $inner = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $denyingPolicy = new PolicyEngine(allowedNodeTypes: ['something-else']);
+        $guarded = new GuardedLlmClient($inner, $denyingPolicy, nodeType: 'ai.llm.prompt', targetHost: 'api.anthropic.com');
+        $node = new LlmPromptNode($guarded);
+
+        $result = $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertFalse($result->success);
+        $this->assertNotNull($result->error);
+        $this->assertSame(0, $inner->requestCount(), 'the denial happened before the wrapped client was ever reached');
+    }
+
+    public function test_a_policy_denial_is_not_retried_by_the_schema_loop(): void
+    {
+        $inner = new FakeDriver([]);
+        $denyingPolicy = new PolicyEngine(allowedNodeTypes: ['something-else']);
+        $guarded = new GuardedLlmClient($inner, $denyingPolicy, nodeType: 'ai.llm.prompt', targetHost: 'api.anthropic.com');
+        $node = new LlmPromptNode($guarded, maxAttempts: 3);
+
+        $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertSame(0, $inner->requestCount(), 'a policy denial fails immediately — it is never retried across attempts');
     }
 
     public function test_dry_run_never_calls_the_llm_client(): void
