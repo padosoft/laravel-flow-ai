@@ -9,12 +9,22 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
+use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 
 /**
  * @internal
  */
 final class LaravelFlowAIServiceProvider extends ServiceProvider
 {
+    /**
+     * Node handler classes this package contributes to core's registry.
+     *
+     * @var list<class-string>
+     */
+    private const NODE_HANDLERS = [
+        LlmPromptNode::class,
+    ];
+
     public function register(): void
     {
         $this->mergeConfigFrom(
@@ -35,6 +45,27 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                     : 30,
             );
         });
+
+        $this->registerNodeHandlers();
+    }
+
+    /**
+     * Append this package's node handlers to core's `laravel-flow.nodes.handlers`
+     * config so `NodeRegistry` (a lazily-resolved singleton in core's own
+     * provider) picks them up. Done at REGISTER time — before any provider's
+     * `boot()` runs, and long before anything can resolve `NodeRegistry` — so
+     * provider boot ORDER between this package and core never matters.
+     */
+    private function registerNodeHandlers(): void
+    {
+        /** @var ConfigRepository $config */
+        $config = $this->app->make(ConfigRepository::class);
+        $existing = (array) $config->get('laravel-flow.nodes.handlers', []);
+
+        $config->set(
+            'laravel-flow.nodes.handlers',
+            array_values(array_unique([...$existing, ...self::NODE_HANDLERS])),
+        );
     }
 
     public function boot(): void
