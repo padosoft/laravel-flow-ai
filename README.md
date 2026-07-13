@@ -65,6 +65,8 @@ $response->completionTokens;
 $response->totalTokens();
 ```
 
+Pass `responseSchema` (a JSON Schema array) on `LlmRequest` to request structured output — the built-in `AnthropicDriver` forwards it as a forced tool call (Anthropic's Messages API has no separate structured-output field) and hands back the schema-shaped result as JSON text in `$response->content`, ready to `json_decode()`. Validating the decoded value against a node's declared output ports is the caller's responsibility, not this contract's.
+
 The package binds `LlmClient` to `Padosoft\LaravelFlowAI\Llm\AnthropicDriver` by default. Swap the binding in your own service provider to point at a different implementation. `Padosoft\LaravelFlowAI\Llm\FakeDriver` — a deterministic, no-network driver constructed with a queue of canned `LlmResponse`s — is available for your own application's tests.
 
 ## License

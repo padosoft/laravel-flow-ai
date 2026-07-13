@@ -19,6 +19,15 @@ use RuntimeException;
  * uses PHP's built-in `stream_context_create()` + `file_get_contents()`
  * HTTP wrapper, adding no extra HTTP client dependency to this package.
  *
+ * `LlmRequest::$responseSchema`, when set, is forwarded to Anthropic via
+ * FORCED TOOL USE (Anthropic's Messages API has no separate structured-
+ * output field): a synthetic `structured_output` tool whose `input_schema`
+ * is the caller's schema, with `tool_choice` forcing that tool. The
+ * response's tool-use `input` (already schema-shaped JSON) is then
+ * re-encoded into `LlmResponse::$content` — the caller still receives raw
+ * text, ready to `json_decode()`, exactly as it would for a schema-less
+ * request; it never needs to know which provider mechanism produced it.
+ *
  * @api
  */
 final class AnthropicDriver implements LlmClient
@@ -47,6 +56,12 @@ final class AnthropicDriver implements LlmClient
         $this->transport = $resolvedTransport;
     }
 
+    /**
+     * The synthetic tool name used to force structured output when
+     * {@see LlmRequest::$responseSchema} is set — see {@see complete()}.
+     */
+    private const STRUCTURED_OUTPUT_TOOL_NAME = 'structured_output';
+
     public function complete(LlmRequest $request): LlmResponse
     {
         $payload = [
@@ -60,6 +75,22 @@ final class AnthropicDriver implements LlmClient
 
         if ($request->systemPrompt !== null) {
             $payload['system'] = $request->systemPrompt;
+        }
+
+        // Anthropic's Messages API has no dedicated "structured output"
+        // field: the documented technique is FORCED TOOL USE — declare one
+        // synthetic tool whose input_schema IS the caller's requested
+        // schema, and force the model to call it (tool_choice). The
+        // response then carries the schema-shaped JSON in a tool_use
+        // block's `input`, which parseResponse() below extracts as this
+        // response's `content` instead of free-form text.
+        if ($request->responseSchema !== null) {
+            $payload['tools'] = [[
+                'name' => self::STRUCTURED_OUTPUT_TOOL_NAME,
+                'description' => 'Return the response matching the required schema.',
+                'input_schema' => $request->responseSchema,
+            ]];
+            $payload['tool_choice'] = ['type' => 'tool', 'name' => self::STRUCTURED_OUTPUT_TOOL_NAME];
         }
 
         try {
@@ -98,10 +129,32 @@ final class AnthropicDriver implements LlmClient
 
         $contentBlocks = is_array($decoded['content'] ?? null) ? $decoded['content'] : [];
         $text = '';
+        $structuredOutput = null;
 
         foreach ($contentBlocks as $block) {
-            if (is_array($block) && ($block['type'] ?? null) === 'text' && is_string($block['text'] ?? null)) {
+            if (! is_array($block)) {
+                continue;
+            }
+
+            if (($block['type'] ?? null) === 'text' && is_string($block['text'] ?? null)) {
                 $text .= $block['text'];
+
+                continue;
+            }
+
+            if (($block['type'] ?? null) === 'tool_use'
+                && ($block['name'] ?? null) === self::STRUCTURED_OUTPUT_TOOL_NAME
+                && is_array($block['input'] ?? null)
+            ) {
+                $structuredOutput = $block['input'];
+            }
+        }
+
+        if ($structuredOutput !== null) {
+            try {
+                $text = json_encode($structuredOutput, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            } catch (JsonException $e) {
+                throw new RuntimeException('Anthropic structured tool-use response could not be re-encoded: '.$e->getMessage(), previous: $e);
             }
         }
 

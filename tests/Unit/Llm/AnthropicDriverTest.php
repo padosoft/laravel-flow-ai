@@ -111,6 +111,64 @@ final class AnthropicDriverTest extends TestCase
         self::assertSame('Hello world', $response->content);
     }
 
+    public function test_response_schema_is_forwarded_as_a_forced_tool_call(): void
+    {
+        $captured = null;
+        $schema = ['type' => 'object', 'properties' => ['answer' => ['type' => 'string']], 'required' => ['answer']];
+
+        $driver = new AnthropicDriver(
+            apiKey: 'test-key',
+            transport: function (string $url, array $headers, string $body, int $timeout) use (&$captured): array {
+                $captured = $body;
+
+                return [
+                    'status_code' => 200,
+                    'body' => json_encode([
+                        'model' => 'claude-x',
+                        'content' => [
+                            ['type' => 'tool_use', 'name' => 'structured_output', 'input' => ['answer' => 'yes']],
+                        ],
+                        'usage' => ['input_tokens' => 1, 'output_tokens' => 1],
+                    ], JSON_THROW_ON_ERROR),
+                    'error' => '',
+                ];
+            },
+        );
+
+        $response = $driver->complete(new LlmRequest(prompt: 'q', model: 'claude-x', responseSchema: $schema));
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode((string) $captured, true, flags: JSON_THROW_ON_ERROR);
+        self::assertSame($schema, $decoded['tools'][0]['input_schema']);
+        self::assertSame(['type' => 'tool', 'name' => 'structured_output'], $decoded['tool_choice']);
+
+        // The caller receives raw text ready to json_decode(), same as any
+        // other response — it never needs to know a tool-use mechanism
+        // produced it.
+        self::assertSame(['answer' => 'yes'], json_decode($response->content, true, flags: JSON_THROW_ON_ERROR));
+    }
+
+    public function test_no_tools_payload_when_no_response_schema_is_requested(): void
+    {
+        $captured = null;
+
+        $driver = new AnthropicDriver(
+            apiKey: 'test-key',
+            transport: function (string $url, array $headers, string $body, int $timeout) use (&$captured): array {
+                $captured = $body;
+
+                return ['status_code' => 200, 'body' => self::anthropicResponseBody('ok'), 'error' => ''];
+            },
+        );
+
+        $driver->complete(new LlmRequest(prompt: 'q', model: 'claude-x'));
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode((string) $captured, true, flags: JSON_THROW_ON_ERROR);
+        self::assertArrayNotHasKey('tools', $decoded);
+        self::assertArrayNotHasKey('tool_choice', $decoded);
+    }
+
     public function test_non_2xx_status_throws(): void
     {
         $driver = new AnthropicDriver(
