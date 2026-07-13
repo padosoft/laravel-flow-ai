@@ -15,6 +15,7 @@ use Padosoft\LaravelFlow\Node\PortType;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Llm\LlmRequest;
 use RuntimeException;
+use stdClass;
 
 /**
  * Templated LLM completion node: renders `{{key}}` placeholders in `$template`
@@ -81,7 +82,15 @@ final class LlmPromptNode implements FlowNodeHandler
         /** @var array<string, mixed> $variables */
         $variables = is_array($context->inputs['variables'] ?? null) ? $context->inputs['variables'] : [];
 
-        $prompt = $this->render($template, $variables);
+        try {
+            $prompt = $this->render($template, $variables);
+        } catch (JsonException $e) {
+            // A non-scalar $variables value that isn't JSON-encodable (invalid
+            // UTF-8, a resource, etc.) is a malformed INPUT, not a retryable
+            // LLM-response schema violation — surface it as a structured node
+            // failure like any other execute() error, never an uncaught throw.
+            return NodeResult::failed($e);
+        }
 
         $promptTokens = 0;
         $completionTokens = 0;
@@ -138,21 +147,24 @@ final class LlmPromptNode implements FlowNodeHandler
     private function tryDecodeObject(string $content): ?array
     {
         try {
-            $decoded = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+            // Decoded WITHOUT the associative flag on purpose: PHP's
+            // associative json_decode() maps BOTH `{}` and `[]` to the same
+            // empty PHP array, making the two indistinguishable after the
+            // fact. Decoding to objects first lets `{}` come back as an empty
+            // stdClass (a real JSON object) while `[]` comes back as an empty
+            // PHP array (never an object) — the only way to reject an empty
+            // JSON ARRAY while still accepting a legitimately empty `{}`.
+            $decoded = json_decode($content, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             return null;
         }
 
-        if (! is_array($decoded)) {
+        if (! ($decoded instanceof stdClass)) {
             return null;
         }
 
-        // A JSON array (list) decodes to a PHP list, which is NOT a JSON
-        // object — the node promises object-shaped structured output. An
-        // EMPTY array is ambiguous (both `{}` and `[]` decode to `[]`), so it
-        // is accepted: array_is_list([]) is vacuously true and would
-        // otherwise reject a legitimately empty `{}` response.
-        return $decoded === [] || ! array_is_list($decoded) ? $decoded : null;
+        /** @var array<string, mixed> */
+        return (array) $decoded;
     }
 
     /**

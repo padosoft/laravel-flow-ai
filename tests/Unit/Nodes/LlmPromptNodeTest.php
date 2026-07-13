@@ -85,6 +85,58 @@ final class LlmPromptNodeTest extends TestCase
         $this->assertCount(2, $driver->requests());
     }
 
+    public function test_an_empty_json_array_is_rejected_as_not_an_object(): void
+    {
+        // `[]` and `{}` both decode to the same empty PHP array under
+        // json_decode(..., true) — the empty-array case must not be a
+        // shortcut that lets a literal JSON array bypass validation.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '[]', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+            new LlmResponse(content: '{}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $result = $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertTrue($result->success, 'empty array rejected on attempt 1, empty object succeeds on attempt 2');
+        $this->assertSame([], $result->outputs['result']);
+        $this->assertCount(2, $driver->requests());
+    }
+
+    public function test_a_json_scalar_or_string_is_rejected_as_not_an_object(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '"just a string"', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+            new LlmResponse(content: '42', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver, maxAttempts: 3);
+
+        $result = $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertTrue($result->success);
+        $this->assertCount(3, $driver->requests());
+    }
+
+    public function test_render_failure_returns_failed_not_an_uncaught_exception(): void
+    {
+        // A malformed variables value that json_encode() cannot serialize
+        // (invalid UTF-8) must surface as a structured NodeResult::failed(),
+        // never bubble out of execute() as an uncaught JsonException.
+        $driver = new FakeDriver([]);
+        $node = new LlmPromptNode($driver);
+
+        $result = $node->execute($this->context([
+            'template' => 'Value: {{bad}}',
+            'model' => 'claude-x',
+            'variables' => ['bad' => ["invalid utf-8 \xB1\x31"]],
+        ]));
+
+        $this->assertFalse($result->success);
+        $this->assertNotNull($result->error);
+        $this->assertSame(0, $driver->requestCount(), 'the LLM is never called when rendering fails');
+    }
+
     public function test_an_empty_json_object_is_accepted(): void
     {
         $driver = new FakeDriver([
