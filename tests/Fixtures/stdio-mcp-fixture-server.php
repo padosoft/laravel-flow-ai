@@ -1,0 +1,71 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Minimal, self-contained MCP-ish stdio server used ONLY by
+ * `tests/Integration/StdioMcpTransportIntegrationTest.php` — spawned as a
+ * real subprocess (`php` + this script's path) via the REAL
+ * `StdioMcpTransport`, never a fake, so the transport's actual pipe I/O is
+ * genuinely exercised. Never hits the network and requires no external
+ * package.
+ *
+ * Deliberately emits ONE `notifications/message` line BEFORE every
+ * response, unprompted — the exact server behavior `request()`'s
+ * notification-skipping loop exists to tolerate (a real compliant server MAY
+ * interleave progress/logging notifications while a request is
+ * outstanding).
+ */
+while (($line = fgets(STDIN)) !== false) {
+    $line = trim($line);
+
+    if ($line === '') {
+        continue;
+    }
+
+    /** @var array<string, mixed> $message */
+    $message = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+    $id = $message['id'] ?? null;
+
+    // A JSON-RPC NOTIFICATION (no `id`) — `notifications/initialized` is the
+    // only one this fixture receives; it must not be answered.
+    if ($id === null) {
+        continue;
+    }
+
+    fwrite(STDOUT, json_encode([
+        'jsonrpc' => '2.0',
+        'method' => 'notifications/message',
+        'params' => ['level' => 'info', 'data' => 'fixture log line before the real response'],
+    ], JSON_THROW_ON_ERROR)."\n");
+    fflush(STDOUT);
+
+    $method = $message['method'] ?? '';
+    /** @var array<string, mixed> $params */
+    $params = is_array($message['params'] ?? null) ? $message['params'] : [];
+
+    $result = match ($method) {
+        'initialize' => ['protocolVersion' => '2025-06-18', 'serverInfo' => ['name' => 'fixture', 'version' => '1.0.0']],
+        'tools/list' => ['tools' => [['name' => 'echo', 'inputSchema' => ['type' => 'object']]]],
+        'tools/call' => (($params['name'] ?? null) === 'fail')
+            ? ['content' => [['type' => 'text', 'text' => 'fixture-simulated failure']], 'isError' => true]
+            : ['content' => [['type' => 'text', 'text' => json_encode($params['arguments'] ?? [])]], 'isError' => false],
+        default => null,
+    };
+
+    if ($result === null) {
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'error' => ['code' => -32601, 'message' => "unknown method [{$method}]"],
+        ], JSON_THROW_ON_ERROR)."\n");
+    } else {
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => $result,
+        ], JSON_THROW_ON_ERROR)."\n");
+    }
+
+    fflush(STDOUT);
+}

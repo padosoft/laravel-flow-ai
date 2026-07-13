@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Tests\Unit;
 
 use FilesystemIterator;
+use Padosoft\LaravelFlowAI\Tests\Integration\StdioMcpTransportIntegrationTest;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -15,10 +16,20 @@ use RecursiveIteratorIterator;
  * `StdioMcpTransportFactory` — both spawn a REAL child process
  * (`proc_open()`) — the MCP client test suite exclusively exercises
  * `FakeMcpTransport(Factory)`.
+ *
+ * ONE deliberate, whitelisted exception: `tests/Integration/` — a single,
+ * well-understood real-subprocess test
+ * ({@see StdioMcpTransportIntegrationTest})
+ * spawning only a self-contained fixture PHP script (never the network, never
+ * an external package), added specifically to exercise
+ * `StdioMcpTransport`'s actual pipe I/O — this sweep's own reason to exist is
+ * to keep that a SINGLE, intentional exception, not an accidental habit.
  */
 final class NoRealMcpSubprocessInTestSuiteTest extends TestCase
 {
     private const FORBIDDEN_CLASSES = ['StdioMcpTransport', 'StdioMcpTransportFactory'];
+
+    private const EXEMPT_DIRECTORY = 'Integration';
 
     public function test_no_test_constructs_a_real_stdio_mcp_transport(): void
     {
@@ -29,6 +40,12 @@ final class NoRealMcpSubprocessInTestSuiteTest extends TestCase
 
         foreach ($iterator as $file) {
             if (! $file->isFile() || $file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $relativePath = substr($file->getPathname(), strlen($testsDir) + 1);
+
+            if (str_starts_with($relativePath, self::EXEMPT_DIRECTORY.DIRECTORY_SEPARATOR)) {
                 continue;
             }
 

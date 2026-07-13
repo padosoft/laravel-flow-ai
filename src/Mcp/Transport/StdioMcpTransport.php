@@ -68,6 +68,46 @@ final class StdioMcpTransport implements McpTransport
             'params' => $params,
         ]);
 
+        // MCP permits the server to interleave NOTIFICATIONS (progress,
+        // logging, `notifications/message`, etc.) while a request is
+        // outstanding — a JSON-RPC notification has no `id` field at all, by
+        // spec. Keep reading lines (each still bounded by the same per-line
+        // $timeoutSeconds, so a genuinely stuck server still fails fast)
+        // until one carries a REAL `id`, then require it to match — a
+        // mismatched id (not merely absent) means an out-of-order response
+        // this single-request-in-flight transport cannot make sense of.
+        while (true) {
+            $decoded = $this->readMessage();
+
+            if (! array_key_exists('id', $decoded) || $decoded['id'] === null) {
+                continue;
+            }
+
+            if ($decoded['id'] !== $id) {
+                throw new McpConnectionException("MCP server response id [{$this->stringifyId($decoded['id'])}] does not match request id [{$id}] — out-of-order responses are not supported by this transport.");
+            }
+
+            if (array_key_exists('error', $decoded)) {
+                /** @var array<string, mixed> $error */
+                $error = is_array($decoded['error']) ? $decoded['error'] : [];
+                $message = is_string($error['message'] ?? null) ? $error['message'] : 'unknown error';
+                $code = is_int($error['code'] ?? null) ? $error['code'] : 0;
+
+                throw new McpConnectionException("MCP server returned a JSON-RPC error (code {$code}): {$message}");
+            }
+
+            /** @var array<string, mixed> $result */
+            $result = is_array($decoded['result'] ?? null) ? $decoded['result'] : [];
+
+            return $result;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function readMessage(): array
+    {
         $line = $this->readLine();
 
         try {
@@ -81,23 +121,8 @@ final class StdioMcpTransport implements McpTransport
             throw new McpConnectionException('MCP server response was valid JSON but not a JSON-RPC object.');
         }
 
-        if (($decoded['id'] ?? null) !== $id) {
-            throw new McpConnectionException("MCP server response id [{$this->stringifyId($decoded['id'] ?? null)}] does not match request id [{$id}] — out-of-order responses are not supported by this transport.");
-        }
-
-        if (array_key_exists('error', $decoded)) {
-            /** @var array<string, mixed> $error */
-            $error = is_array($decoded['error']) ? $decoded['error'] : [];
-            $message = is_string($error['message'] ?? null) ? $error['message'] : 'unknown error';
-            $code = is_int($error['code'] ?? null) ? $error['code'] : 0;
-
-            throw new McpConnectionException("MCP server returned a JSON-RPC error (code {$code}): {$message}");
-        }
-
-        /** @var array<string, mixed> $result */
-        $result = is_array($decoded['result'] ?? null) ? $decoded['result'] : [];
-
-        return $result;
+        /** @var array<string, mixed> $decoded */
+        return $decoded;
     }
 
     /**
@@ -125,6 +150,20 @@ final class StdioMcpTransport implements McpTransport
         $this->pipes = [];
 
         if (is_resource($this->process)) {
+            // Closing stdin (above) signals EOF, which a WELL-BEHAVED server
+            // exits on — but MCP makes no such guarantee, and a server that
+            // ignores stdin EOF would make proc_close() below block
+            // INDEFINITELY (it waits for the child to actually exit).
+            // Terminate explicitly first: a process already exiting on its
+            // own from the EOF just received is unaffected by an extra
+            // signal, and a stuck one is force-killed instead of hanging
+            // node cleanup forever.
+            $status = proc_get_status($this->process);
+
+            if ($status['running']) {
+                proc_terminate($this->process);
+            }
+
             proc_close($this->process);
         }
 
@@ -138,10 +177,22 @@ final class StdioMcpTransport implements McpTransport
     {
         $this->ensureStarted();
 
-        $encoded = json_encode($message, JSON_THROW_ON_ERROR)."\n";
+        try {
+            $encoded = json_encode($message, JSON_THROW_ON_ERROR)."\n";
+        } catch (JsonException $e) {
+            throw new McpConnectionException("Failed to encode an outbound MCP message: {$e->getMessage()}", previous: $e);
+        }
 
-        if (fwrite($this->pipes[0], $encoded) === false) {
-            throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited.");
+        $expectedBytes = strlen($encoded);
+        $written = fwrite($this->pipes[0], $encoded);
+
+        if ($written !== $expectedBytes) {
+            // fwrite() returning `false`, OR a SHORT write (fewer bytes than
+            // requested — a pipe can legitimately write partially, it is
+            // NOT reserved to "the write failed"), both leave the server
+            // with a truncated, unparseable JSON-RPC line. Either case means
+            // the message was NOT reliably delivered.
+            throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited or its input pipe is full.");
         }
 
         fflush($this->pipes[0]);
