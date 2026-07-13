@@ -57,6 +57,49 @@ final class NoNetworkCallsInTestSuiteTest extends TestCase
     }
 
     /**
+     * Pins the tokenizer's coverage of every class-reference FORM PHP
+     * actually produces for a `new` expression, per PHP 8's tokenization
+     * rules (verified directly against this package's installed PHP): an
+     * unqualified name (`T_STRING`), a namespace-qualified name
+     * (`T_NAME_QUALIFIED`), a fully-qualified name (`T_NAME_FULLY_QUALIFIED`),
+     * and a `namespace\`-relative name (`T_NAME_RELATIVE`) — round-2 review
+     * caught the fully-qualified form being missed entirely by an earlier
+     * version of this sweep.
+     */
+    public function test_sweep_recognizes_every_class_reference_form(): void
+    {
+        $withTransport = <<<'PHP'
+            <?php
+            new AnthropicDriver(apiKey: 'k', transport: $fake);
+            new Llm\AnthropicDriver(apiKey: 'k', transport: $fake);
+            new \Padosoft\LaravelFlowAI\Llm\AnthropicDriver(apiKey: 'k', transport: $fake);
+            new namespace\AnthropicDriver(apiKey: 'k', transport: $fake);
+            PHP;
+
+        self::assertSame([true, true, true, true], self::anthropicDriverConstructions($withTransport));
+
+        $withoutTransport = <<<'PHP'
+            <?php
+            new AnthropicDriver(apiKey: 'k');
+            new Llm\AnthropicDriver(apiKey: 'k');
+            new \Padosoft\LaravelFlowAI\Llm\AnthropicDriver(apiKey: 'k');
+            new namespace\AnthropicDriver(apiKey: 'k');
+            PHP;
+
+        self::assertSame([false, false, false, false], self::anthropicDriverConstructions($withoutTransport));
+    }
+
+    public function test_sweep_is_not_confused_by_nested_parentheses_in_arguments(): void
+    {
+        $source = <<<'PHP'
+            <?php
+            new AnthropicDriver(apiKey: 'k', transport: fn (string $u, array $h, string $b, int $t): array => ['status_code' => 200, 'body' => '', 'error' => '']);
+            PHP;
+
+        self::assertSame([true], self::anthropicDriverConstructions($source));
+    }
+
+    /**
      * Tokenizes $source and yields one bool per `new [\...]AnthropicDriver(...)`
      * construction found: true if its top-level argument list contains a
      * `transport:` named argument, false otherwise.
@@ -105,7 +148,15 @@ final class NoNetworkCallsInTestSuiteTest extends TestCase
         while ($j < $count) {
             $t = $tokens[$j];
 
-            if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR], true)) {
+            // PHP 8+ tokenizes a qualified/fully-qualified/namespace-relative
+            // class reference (Llm\AnthropicDriver, \Foo\AnthropicDriver,
+            // namespace\AnthropicDriver) as ONE T_NAME_* token carrying the
+            // whole backslash-joined string — not a T_STRING/T_NS_SEPARATOR
+            // sequence, which only occurs for a bare unqualified name
+            // (verified against this package's actual PHP 8.3-8.5 matrix via
+            // token_get_all(); a reviewer caught the original version of
+            // this sweep missing the FQN form entirely).
+            if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE], true)) {
                 $className .= $t[1];
                 $j++;
 
