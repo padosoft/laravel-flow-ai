@@ -98,6 +98,23 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
 
+    // Proves `result` being a JSON ARRAY (as opposed to the `array_response`
+    // mode above, which is the WHOLE line being an array) is ALSO rejected —
+    // json_decode(..., true) maps both `{}` and `[]` to the same empty PHP
+    // array, so without an explicit shape check `result: []` would pass
+    // is_array($decoded['result']) and be silently treated as a successful
+    // call with a missing/empty result, hiding the real protocol violation.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'array_result') {
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => [],
+        ], JSON_THROW_ON_ERROR)."\n");
+        fflush(STDOUT);
+
+        continue;
+    }
+
     // Proves a response with neither a `result` nor an `error` member (a
     // spec-violating message) is surfaced as a transport failure too.
     if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'no_result_no_error') {

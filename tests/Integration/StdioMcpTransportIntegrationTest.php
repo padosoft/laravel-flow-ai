@@ -103,6 +103,27 @@ final class StdioMcpTransportIntegrationTest extends TestCase
         }
     }
 
+    public function test_a_json_array_result_over_a_real_subprocess_throws_a_connection_exception(): void
+    {
+        // Regression test: distinct from array_response above (the WHOLE
+        // line is an array there). Here the envelope is a valid JSON-RPC
+        // object but its `result` MEMBER is `[]` — json_decode(..., true)
+        // maps that to the same empty PHP array as a legitimate `{}`
+        // result, so without an explicit shape check on the ORIGINAL
+        // non-associative decode, this would be silently accepted as a
+        // successful call.
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5);
+        $client = new McpClient($transport);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $client->callTool('echo', ['mode' => 'array_result']);
+        } finally {
+            $client->close();
+        }
+    }
+
     public function test_a_malformed_non_object_result_over_a_real_subprocess_throws_a_connection_exception(): void
     {
         [$command, $args] = $this->fixtureServerCommand();

@@ -35,7 +35,7 @@ use stdClass;
  */
 final class StdioMcpTransport implements McpTransport
 {
-    private const READ_CHUNK_BYTES = 65536;
+    private const IO_CHUNK_BYTES = 65536;
 
     /**
      * Bounded grace period after SIGTERM before close() escalates to
@@ -181,6 +181,16 @@ final class StdioMcpTransport implements McpTransport
                 throw new McpConnectionException('MCP server response was valid JSON but not a JSON-RPC object (got '.get_debug_type($shapeCheck).').');
             }
 
+            // Same {}-vs-[] ambiguity applies one level down: a `result`
+            // member of `[]` would decode to an empty PHP array via the
+            // associative decode below, indistinguishable from a legitimate
+            // `{}` result once request()'s `is_array($decoded['result'])`
+            // check runs — checked here, on the non-associative shape, while
+            // the distinction still exists.
+            if (property_exists($shapeCheck, 'result') && ! ($shapeCheck->result instanceof stdClass)) {
+                throw new McpConnectionException('MCP server response `result` was valid JSON but not a JSON object (got '.get_debug_type($shapeCheck->result).').');
+            }
+
             /** @var array<string, mixed> $decoded */
             $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
@@ -278,15 +288,24 @@ final class StdioMcpTransport implements McpTransport
         // an immediate failure — without that deadline, a server that never
         // reads its stdin (backpressure) would hang this loop forever,
         // since a blocking fwrite() would otherwise never return at all.
+        //
+        // Advances an OFFSET into the immutable $encoded string rather than
+        // re-slicing a shrinking $remaining copy on every iteration: each
+        // substr() below is capped to IO_CHUNK_BYTES, so its cost is
+        // bounded regardless of how large the full message is — re-slicing
+        // the (potentially still-huge) remainder on every short write would
+        // degrade toward O(n²) for a large payload written in many small
+        // backpressure-limited chunks.
         $deadline = microtime(true) + $this->timeoutSeconds;
-        $remaining = $encoded;
+        $length = strlen($encoded);
+        $offset = 0;
 
-        while ($remaining !== '') {
+        while ($offset < $length) {
             if (microtime(true) >= $deadline) {
                 throw new McpConnectionException("MCP server [{$this->command}] did not accept a write within {$this->timeoutSeconds}s — its input pipe is full or the process is stuck.");
             }
 
-            $written = fwrite($this->pipes[0], $remaining);
+            $written = fwrite($this->pipes[0], substr($encoded, $offset, self::IO_CHUNK_BYTES));
 
             if ($written === false) {
                 throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited or its input pipe is full.");
@@ -298,7 +317,7 @@ final class StdioMcpTransport implements McpTransport
                 continue;
             }
 
-            $remaining = substr($remaining, $written);
+            $offset += $written;
         }
 
         fflush($this->pipes[0]);
@@ -335,7 +354,7 @@ final class StdioMcpTransport implements McpTransport
                 // ALREADY buffered — it must not itself block while this
                 // exception message is being built, e.g. when the process
                 // closed stdout but left stderr open with nothing queued.
-                $stderr = is_resource($this->pipes[2]) ? (string) stream_get_contents($this->pipes[2], self::READ_CHUNK_BYTES) : '';
+                $stderr = is_resource($this->pipes[2]) ? (string) stream_get_contents($this->pipes[2], self::IO_CHUNK_BYTES) : '';
                 $detail = trim($stderr) !== '' ? " stderr: {$stderr}" : '';
 
                 throw new McpConnectionException("MCP server [{$this->command}] closed its output stream unexpectedly.{$detail}");

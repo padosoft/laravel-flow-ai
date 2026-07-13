@@ -68,12 +68,16 @@ final class NoRealMcpSubprocessInTestSuiteTest extends TestCase
     }
 
     /**
-     * Pins the tokenizer's coverage of every class-reference form PHP 8
-     * actually produces for a `new` expression — same posture as
+     * Pins the tokenizer's coverage of every STATIC class-name form PHP 8
+     * produces for a `new` expression — unqualified, qualified, FQN, and
+     * namespace-relative — same posture as
      * `NoNetworkCallsInTestSuiteTest::test_sweep_recognizes_every_class_reference_form()`.
-     * Without this, a refactor of the token-walking logic could silently
-     * stop recognizing a qualified/FQN/namespace-relative reference and
-     * this sweep would pass CI while missing real constructions.
+     * Deliberately does NOT cover dynamic construction (`new $variable()`,
+     * `new (expr)()`) — the tokenizer has no static class name to match
+     * against those forms at all, so this sweep cannot and does not claim
+     * to catch them. Without this test, a refactor of the token-walking
+     * logic could silently stop recognizing one of the STATIC forms above
+     * and this sweep would pass CI while missing real constructions.
      */
     public function test_sweep_recognizes_every_class_reference_form(): void
     {
