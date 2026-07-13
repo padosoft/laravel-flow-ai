@@ -21,6 +21,7 @@ use Padosoft\LaravelFlowAI\Mcp\Authorization\DenyAllMcpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Mcp\FlowToolServer;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransportFactory;
+use Padosoft\LaravelFlowAI\Nodes\BoundedAgentNode;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 
@@ -37,6 +38,7 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
     private const NODE_HANDLERS = [
         LlmPromptNode::class,
         McpClientNode::class,
+        BoundedAgentNode::class,
     ];
 
     public function register(): void
@@ -115,6 +117,42 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                 exposedFlowNames: array_values(array_filter((array) ($mcpConfig['exposed_flows'] ?? []), 'is_string')),
             );
         });
+
+        // BoundedAgentNode's scalar/array budget+allowlist params have no
+        // class type for the container to auto-resolve — a contextual
+        // binding is the only way a container-built instance (the normal
+        // path when a graph runs this node) picks up host config instead of
+        // silently falling back to the constructor's bare defaults.
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$allowedTools')
+            ->give(fn (Container $app): array => array_values(array_filter(
+                (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.allowed_tools', []),
+                'is_string',
+            )));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxIterations')
+            ->give(fn (Container $app): int => (int) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_iterations', 5));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxTotalTokens')
+            ->give(fn (Container $app): int => (int) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_total_tokens', 4000));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxCostUsd')
+            ->give(function (Container $app): ?float {
+                $value = $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_cost_usd');
+
+                return is_numeric($value) ? (float) $value : null;
+            });
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$costPerThousandTokens')
+            ->give(function (Container $app): ?float {
+                $value = $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.cost_per_thousand_tokens');
+
+                return is_numeric($value) ? (float) $value : null;
+            });
     }
 
     /**

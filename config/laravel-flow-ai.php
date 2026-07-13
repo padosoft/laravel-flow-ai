@@ -72,4 +72,27 @@ return [
         'exposed_flows' => [],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Bounded agent node
+    |--------------------------------------------------------------------------
+    |
+    | Unlike the guardrails above, allowed_tools is DENY-BY-DEFAULT (empty =
+    | the agent may call NOTHING) — an unconfigured agent's own action
+    | surface should default to nothing, not everything. max_cost_usd only
+    | takes effect when cost_per_thousand_tokens is also set: LlmResponse
+    | carries token counts, not cost, so this package has no built-in
+    | per-model pricing table to compute cost from without an explicit rate.
+    |
+    */
+    'agent' => [
+        // Tool names the bounded agent node may call. Example: ['echo-flow'].
+        'allowed_tools' => [],
+
+        'max_iterations' => (int) env('LARAVEL_FLOW_AI_AGENT_MAX_ITERATIONS', 5),
+        'max_total_tokens' => (int) env('LARAVEL_FLOW_AI_AGENT_MAX_TOTAL_TOKENS', 4000),
+        'max_cost_usd' => env('LARAVEL_FLOW_AI_AGENT_MAX_COST_USD'),
+        'cost_per_thousand_tokens' => env('LARAVEL_FLOW_AI_AGENT_COST_PER_THOUSAND_TOKENS'),
+    ],
+
 ];
