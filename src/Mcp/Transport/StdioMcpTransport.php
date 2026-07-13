@@ -71,13 +71,22 @@ final class StdioMcpTransport implements McpTransport
         // MCP permits the server to interleave NOTIFICATIONS (progress,
         // logging, `notifications/message`, etc.) while a request is
         // outstanding — a JSON-RPC notification has no `id` field at all, by
-        // spec. Keep reading lines (each still bounded by the same per-line
-        // $timeoutSeconds, so a genuinely stuck server still fails fast)
-        // until one carries a REAL `id`, then require it to match — a
-        // mismatched id (not merely absent) means an out-of-order response
-        // this single-request-in-flight transport cannot make sense of.
+        // spec. Keep reading messages, skipping id-less ones, until one
+        // carries a REAL `id`. `$deadline` is an OVERALL budget for the
+        // whole call, not a per-read one: each individual readLine() still
+        // has its own bounded wait (so a truly stuck server fails fast), but
+        // without a call-wide ceiling a server that keeps emitting
+        // notifications indefinitely — never sending the actual response —
+        // could keep resetting a per-read-only timer forever and never time
+        // out at all.
+        $deadline = microtime(true) + $this->timeoutSeconds;
+
         while (true) {
-            $decoded = $this->readMessage();
+            if (microtime(true) >= $deadline) {
+                throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s (interleaved server messages kept arriving without the requested response).");
+            }
+
+            $decoded = $this->readMessage($deadline);
 
             if (! array_key_exists('id', $decoded) || $decoded['id'] === null) {
                 continue;
@@ -106,9 +115,9 @@ final class StdioMcpTransport implements McpTransport
     /**
      * @return array<string, mixed>
      */
-    private function readMessage(): array
+    private function readMessage(float $deadline): array
     {
-        $line = $this->readLine();
+        $line = $this->readLine($deadline);
 
         try {
             /** @var mixed $decoded */
@@ -183,41 +192,64 @@ final class StdioMcpTransport implements McpTransport
             throw new McpConnectionException("Failed to encode an outbound MCP message: {$e->getMessage()}", previous: $e);
         }
 
-        $expectedBytes = strlen($encoded);
-        $written = fwrite($this->pipes[0], $encoded);
+        // A pipe can legitimately accept fewer bytes than requested in ONE
+        // fwrite() call (a short write is normal backpressure, not a
+        // failure) — loop, advancing past whatever was actually written,
+        // until the full message is sent. Only `false`/`0` (no progress at
+        // all) is a genuine failure; anything else keeps retrying with the
+        // REMAINING tail.
+        $remaining = $encoded;
 
-        if ($written !== $expectedBytes) {
-            // fwrite() returning `false`, OR a SHORT write (fewer bytes than
-            // requested — a pipe can legitimately write partially, it is
-            // NOT reserved to "the write failed"), both leave the server
-            // with a truncated, unparseable JSON-RPC line. Either case means
-            // the message was NOT reliably delivered.
-            throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited or its input pipe is full.");
+        while ($remaining !== '') {
+            $written = fwrite($this->pipes[0], $remaining);
+
+            if ($written === false || $written === 0) {
+                throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited or its input pipe is full.");
+            }
+
+            $remaining = substr($remaining, $written);
         }
 
         fflush($this->pipes[0]);
     }
 
-    private function readLine(): string
+    private function readLine(float $deadline): string
     {
         $this->ensureStarted();
 
-        stream_set_timeout($this->pipes[1], $this->timeoutSeconds);
-        $line = fgets($this->pipes[1]);
-        $meta = stream_get_meta_data($this->pipes[1]);
+        // Loops past blank lines (a stray "\n" a server emits is not EOF —
+        // only fgets() itself returning false, meaning the stream actually
+        // closed, means that) — bounded by the SAME overall $deadline as the
+        // rest of request(), not a fresh per-call budget, so a server
+        // spamming blank lines forever cannot bypass the timeout either.
+        while (true) {
+            $remaining = $deadline - microtime(true);
 
-        if ($meta['timed_out']) {
-            throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s.");
+            if ($remaining <= 0) {
+                throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s.");
+            }
+
+            stream_set_timeout($this->pipes[1], (int) ceil($remaining));
+            $line = fgets($this->pipes[1]);
+            $meta = stream_get_meta_data($this->pipes[1]);
+
+            if ($meta['timed_out']) {
+                throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s.");
+            }
+
+            if ($line === false) {
+                $stderr = is_resource($this->pipes[2]) ? (string) stream_get_contents($this->pipes[2], self::READ_CHUNK_BYTES) : '';
+                $detail = trim($stderr) !== '' ? " stderr: {$stderr}" : '';
+
+                throw new McpConnectionException("MCP server [{$this->command}] closed its output stream unexpectedly.{$detail}");
+            }
+
+            if (trim($line) === '') {
+                continue;
+            }
+
+            return $line;
         }
-
-        if ($line === false || trim($line) === '') {
-            $stderr = is_resource($this->pipes[2]) ? (string) stream_get_contents($this->pipes[2], self::READ_CHUNK_BYTES) : '';
-            $detail = trim($stderr) !== '' ? " stderr: {$stderr}" : '';
-
-            throw new McpConnectionException("MCP server [{$this->command}] closed its output stream unexpectedly.{$detail}");
-        }
-
-        return $line;
     }
 
     private function ensureStarted(): void

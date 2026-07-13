@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI\Tests\Integration;
 
+use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolExecutionException;
 use Padosoft\LaravelFlowAI\Mcp\McpClient;
 use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransport;
@@ -65,6 +66,47 @@ final class StdioMcpTransportIntegrationTest extends TestCase
             $this->expectException(McpToolExecutionException::class);
             $client->callTool('fail', []);
         } finally {
+            $client->close();
+        }
+    }
+
+    public function test_a_blank_line_from_the_server_is_skipped_not_mistaken_for_eof(): void
+    {
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5);
+        $client = new McpClient($transport);
+
+        try {
+            $content = $client->callTool('echo', ['mode' => 'blank_line_before_response']);
+            $this->assertSame([['type' => 'text', 'text' => '{"mode":"blank_line_before_response"}']], $content);
+        } finally {
+            $client->close();
+        }
+    }
+
+    public function test_the_overall_request_timeout_fires_despite_continuous_live_notification_traffic(): void
+    {
+        // The fixture floods notifications for 40 * 50ms = 2s and never
+        // answers this request at all — a client with only a PER-READ
+        // timeout (the pre-round-2 bug) would never expire, since every
+        // notification arrives well within any single read's window and
+        // resets it. A client with an OVERALL per-request deadline (the
+        // fix) must still throw at roughly its configured 1s budget.
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 1);
+        $client = new McpClient($transport);
+
+        $start = microtime(true);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $client->callTool('echo', ['mode' => 'flood_never_respond']);
+        } finally {
+            $elapsed = microtime(true) - $start;
+            // Generous upper bound (the flood itself runs 2s) — this only
+            // needs to prove the client did NOT wait for the full flood or
+            // hang, not pin an exact millisecond budget.
+            $this->assertLessThan(1.8, $elapsed, 'the overall deadline must fire well before the 2s flood completes');
             $client->close();
         }
     }

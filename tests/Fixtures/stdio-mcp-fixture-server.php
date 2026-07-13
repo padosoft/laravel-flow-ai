@@ -43,6 +43,32 @@ while (($line = fgets(STDIN)) !== false) {
     $method = $message['method'] ?? '';
     /** @var array<string, mixed> $params */
     $params = is_array($message['params'] ?? null) ? $message['params'] : [];
+    /** @var array<string, mixed> $arguments */
+    $arguments = is_array($params['arguments'] ?? null) ? $params['arguments'] : [];
+
+    // Proves the client's OVERALL request timeout (not just a per-read one)
+    // fires even while the server keeps sending live traffic: floods
+    // notifications for longer than any reasonable test timeout, then never
+    // answers this request's id at all.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'flood_never_respond') {
+        for ($i = 0; $i < 40; $i++) {
+            fwrite(STDOUT, json_encode([
+                'jsonrpc' => '2.0',
+                'method' => 'notifications/message',
+                'params' => ['level' => 'info', 'data' => "flood {$i}"],
+            ], JSON_THROW_ON_ERROR)."\n");
+            fflush(STDOUT);
+            usleep(50_000);
+        }
+
+        continue;
+    }
+
+    // Proves a blank line from the server is skipped, not mistaken for EOF.
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'blank_line_before_response') {
+        fwrite(STDOUT, "\n");
+        fflush(STDOUT);
+    }
 
     $result = match ($method) {
         'initialize' => ['protocolVersion' => '2025-06-18', 'serverInfo' => ['name' => 'fixture', 'version' => '1.0.0']],
