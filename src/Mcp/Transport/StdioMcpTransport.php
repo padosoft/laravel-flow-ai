@@ -222,16 +222,31 @@ final class StdioMcpTransport implements McpTransport
         // A pipe can legitimately accept fewer bytes than requested in ONE
         // fwrite() call (a short write is normal backpressure, not a
         // failure) — loop, advancing past whatever was actually written,
-        // until the full message is sent. Only `false`/`0` (no progress at
-        // all) is a genuine failure; anything else keeps retrying with the
-        // REMAINING tail.
+        // until the full message is sent. `$this->pipes[0]` is
+        // NON-BLOCKING (set in ensureStarted()): `0` bytes written means
+        // "the pipe's buffer is currently full," not "the process is gone,"
+        // so it is retried under an OVERALL deadline rather than treated as
+        // an immediate failure — without that deadline, a server that never
+        // reads its stdin (backpressure) would hang this loop forever,
+        // since a blocking fwrite() would otherwise never return at all.
+        $deadline = microtime(true) + $this->timeoutSeconds;
         $remaining = $encoded;
 
         while ($remaining !== '') {
+            if (microtime(true) >= $deadline) {
+                throw new McpConnectionException("MCP server [{$this->command}] did not accept a write within {$this->timeoutSeconds}s — its input pipe is full or the process is stuck.");
+            }
+
             $written = fwrite($this->pipes[0], $remaining);
 
-            if ($written === false || $written === 0) {
+            if ($written === false) {
                 throw new McpConnectionException("Failed writing to MCP server process [{$this->command}] — the process may have exited or its input pipe is full.");
+            }
+
+            if ($written === 0) {
+                usleep(1_000);
+
+                continue;
             }
 
             $remaining = substr($remaining, $written);
@@ -273,6 +288,11 @@ final class StdioMcpTransport implements McpTransport
             }
 
             if ($line === false) {
+                // `$this->pipes[2]` is NON-BLOCKING (set in ensureStarted()),
+                // so this only ever returns whatever stderr output is
+                // ALREADY buffered — it must not itself block while this
+                // exception message is being built, e.g. when the process
+                // closed stdout but left stderr open with nothing queued.
                 $stderr = is_resource($this->pipes[2]) ? (string) stream_get_contents($this->pipes[2], self::READ_CHUNK_BYTES) : '';
                 $detail = trim($stderr) !== '' ? " stderr: {$stderr}" : '';
 
@@ -304,6 +324,26 @@ final class StdioMcpTransport implements McpTransport
         if (! is_resource($process)) {
             throw new McpConnectionException("Failed to spawn MCP server process [{$this->command}].");
         }
+
+        // stdin (0) and stderr (2) are switched to NON-BLOCKING mode so
+        // write() and the stderr diagnostic read in readLine() can be
+        // bounded by an explicit deadline loop instead of risking an
+        // indefinite block — stdin on pipe backpressure from a stuck
+        // server, stderr on a process that closed stdout but left stderr
+        // open with nothing to read. stdout (1) stays BLOCKING: readLine()
+        // relies on stream_set_timeout() + fgets(), which needs a blocking
+        // stream to time out correctly rather than busy-poll.
+        //
+        // KNOWN LIMITATION: stream_set_blocking() on a proc_open() pipe is a
+        // documented no-op on Windows (PHP bug #47918 and related, still
+        // open) — fwrite()/stream_get_contents() keep their blocking
+        // behavior there regardless, so the write-phase and stderr-read
+        // deadlines below are only actually enforced on Linux/macOS, where
+        // MCP stdio servers are overwhelmingly deployed and where this
+        // package's CI runs. See the (Windows-skipped) regression tests in
+        // tests/Integration/StdioMcpTransportIntegrationTest.php.
+        stream_set_blocking($pipes[0], false);
+        stream_set_blocking($pipes[2], false);
 
         $this->process = $process;
         $this->pipes = $pipes;

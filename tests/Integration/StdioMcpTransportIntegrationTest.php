@@ -112,6 +112,73 @@ final class StdioMcpTransportIntegrationTest extends TestCase
         }
     }
 
+    public function test_write_backpressure_from_a_stuck_subprocess_does_not_hang_and_times_out(): void
+    {
+        // stream_set_blocking() on a proc_open() pipe is a documented no-op
+        // on Windows (PHP bug #47918 and long-standing, still-open Windows
+        // stream-select/blocking-mode limitations for anonymous pipes) —
+        // confirmed empirically while writing this test: on Windows, write()
+        // still blocks for the full child lifetime despite the non-blocking
+        // fix, because the underlying fwrite() itself never returns early.
+        // CI runs ubuntu-latest exclusively (see .github/workflows), so this
+        // regression is real and enforced there; it is skipped on Windows
+        // rather than asserted with a 30s-tolerant bound that would defeat
+        // its own purpose.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('proc_open() pipes ignore stream_set_blocking() on Windows — this deadline is only enforceable/verifiable on Linux/macOS, where CI runs.');
+        }
+
+        // A subprocess that never reads its stdin at all — proves write()'s
+        // own bounded deadline (not just readLine()'s) prevents an
+        // indefinite hang once the child stops draining the pipe
+        // (backpressure). Bypasses McpClient/the fixture script and talks to
+        // StdioMcpTransport directly, since only ONE oversized message is
+        // needed to force it.
+        $transport = new StdioMcpTransport(PHP_BINARY, ['-r', 'sleep(30);'], timeoutSeconds: 1);
+
+        $start = microtime(true);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            // Large enough to exceed any OS pipe buffer and force
+            // backpressure, since the child process never reads it.
+            $transport->request('initialize', ['giant' => str_repeat('x', 20_000_000)]);
+        } finally {
+            $elapsed = microtime(true) - $start;
+            $this->assertLessThan(5.0, $elapsed, 'the write-phase deadline must fire, not hang indefinitely');
+            $transport->close();
+        }
+    }
+
+    public function test_reading_stderr_after_stdout_closes_does_not_hang_when_stderr_stays_open_and_empty(): void
+    {
+        // Same Windows proc_open()/stream_set_blocking() limitation as
+        // test_write_backpressure_from_a_stuck_subprocess_does_not_hang_and_times_out()
+        // above — the stderr pipe is also non-blocking only on platforms
+        // where PHP honors it.
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('proc_open() pipes ignore stream_set_blocking() on Windows — this deadline is only enforceable/verifiable on Linux/macOS, where CI runs.');
+        }
+
+        // Child closes stdout but keeps running (stderr stays open, empty,
+        // with its write end held by a still-live process) — proves the
+        // stderr diagnostic read in readLine()'s EOF path does not itself
+        // block waiting for stderr data/EOF that will never arrive within
+        // any reasonable time.
+        $transport = new StdioMcpTransport(PHP_BINARY, ['-r', 'fclose(STDOUT); sleep(30);'], timeoutSeconds: 5);
+
+        $start = microtime(true);
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $transport->request('initialize', []);
+        } finally {
+            $elapsed = microtime(true) - $start;
+            $this->assertLessThan(3.0, $elapsed, 'reading stderr must not block waiting for data that will never arrive');
+            $transport->close();
+        }
+    }
+
     public function test_the_overall_request_timeout_fires_despite_continuous_live_notification_traffic(): void
     {
         // The fixture floods notifications for 40 * 50ms = 2s and never
