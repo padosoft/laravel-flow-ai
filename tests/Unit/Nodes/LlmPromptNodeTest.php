@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Tests\Unit\Nodes;
 
 use Padosoft\LaravelFlow\Node\NodeContext;
+use Padosoft\LaravelFlow\Persistence\KeyBasedPayloadRedactor;
 use Padosoft\LaravelFlowAI\Llm\FakeDriver;
 use Padosoft\LaravelFlowAI\Llm\LlmResponse;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
@@ -225,6 +226,65 @@ final class LlmPromptNodeTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
 
         new LlmPromptNode($driver, maxAttempts: 0);
+    }
+
+    public function test_outbound_payload_is_redacted(): void
+    {
+        // F-PR3: a redacted-list KEY wired into a template variable must
+        // never reach the rendered prompt actually sent to the LLM client —
+        // asserted on the payload the FAKE client actually received.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $redactor = new KeyBasedPayloadRedactor(enabled: true, keys: ['secret'], replacement: '[redacted]');
+        $node = new LlmPromptNode($driver, redactor: $redactor);
+
+        $node->execute($this->context([
+            'template' => 'The secret is: {{secret}}. Topic: {{topic}}.',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'sk-super-sensitive-123', 'topic' => 'flows'],
+        ]));
+
+        $sentPrompt = $driver->requests()[0]->prompt;
+        $this->assertStringNotContainsString('sk-super-sensitive-123', $sentPrompt, 'the secret value never reaches the outbound request');
+        $this->assertStringContainsString('[redacted]', $sentPrompt);
+        $this->assertStringContainsString('flows', $sentPrompt, 'a non-redacted variable still renders normally');
+    }
+
+    public function test_no_redactor_means_variables_pass_through_unchanged(): void
+    {
+        // Direct construction (bypassing the container) with no redactor is
+        // a valid, deliberate opt-out — e.g. isolated node-logic tests that
+        // don't care about redaction at all (every OTHER test in this file).
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $node->execute($this->context([
+            'template' => 'Value: {{secret}}',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'not-actually-redacted-without-a-redactor'],
+        ]));
+
+        $this->assertStringContainsString('not-actually-redacted-without-a-redactor', $driver->requests()[0]->prompt);
+    }
+
+    public function test_a_disabled_redactor_leaves_variables_unchanged(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 5, completionTokens: 2),
+        ]);
+        $redactor = new KeyBasedPayloadRedactor(enabled: false, keys: ['secret']);
+        $node = new LlmPromptNode($driver, redactor: $redactor);
+
+        $node->execute($this->context([
+            'template' => 'Value: {{secret}}',
+            'model' => 'claude-x',
+            'variables' => ['secret' => 'still-here-when-redaction-is-disabled'],
+        ]));
+
+        $this->assertStringContainsString('still-here-when-redaction-is-disabled', $driver->requests()[0]->prompt);
     }
 
     public function test_dry_run_never_calls_the_llm_client(): void

@@ -6,6 +6,7 @@ namespace Padosoft\LaravelFlowAI\Nodes;
 
 use InvalidArgumentException;
 use JsonException;
+use Padosoft\LaravelFlow\Contracts\PayloadRedactor;
 use Padosoft\LaravelFlow\Node\Attributes\FlowNode;
 use Padosoft\LaravelFlow\Node\Attributes\Input;
 use Padosoft\LaravelFlow\Node\Attributes\Output;
@@ -38,6 +39,15 @@ use stdClass;
  * call with real cost is exactly the kind of side effect dry-run exists to
  * skip), returning `NodeResult::dryRunSkipped()` instead.
  *
+ * `$variables` pass through the bound {@see PayloadRedactor} (when one is
+ * wired — see the constructor) BEFORE template rendering, so a redacted-list
+ * key wired into a prompt variable never reaches the external LLM provider.
+ * Egress/rate-limit/per-node-type policy is enforced separately, one layer
+ * out, by whatever {@see LlmClient} this node was constructed with — a real
+ * deployment binds `LlmClient::class` to a `Guardrails\GuardedLlmClient`
+ * wrapping the actual provider driver, so this node never has to know policy
+ * exists; it just calls `$this->client->complete()`.
+ *
  * @api
  */
 #[FlowNode(
@@ -66,9 +76,19 @@ final class LlmPromptNode implements FlowNodeHandler
     #[Output(type: PortType::Json)]
     public array $result;
 
+    /**
+     * `$redactor` is nullable so direct construction in tests (bypassing the
+     * container) keeps working without wiring a redactor — but a REAL,
+     * container-built instance (the normal path when a graph runs this node)
+     * still receives core's bound {@see PayloadRedactor} automatically:
+     * Laravel's container resolves a type-hinted class parameter from its
+     * bindings BEFORE falling back to a default value, so `null` only takes
+     * effect when nothing constructs this class through the container.
+     */
     public function __construct(
         private readonly LlmClient $client,
         private readonly int $maxAttempts = self::DEFAULT_MAX_ATTEMPTS,
+        private readonly ?PayloadRedactor $redactor = null,
     ) {
         if ($this->maxAttempts < 1) {
             throw new InvalidArgumentException("LlmPromptNode maxAttempts must be at least 1, got {$this->maxAttempts}.");
@@ -86,6 +106,19 @@ final class LlmPromptNode implements FlowNodeHandler
         $systemPrompt = (string) ($context->inputs['systemPrompt'] ?? '');
         /** @var array<string, mixed> $variables */
         $variables = is_array($context->inputs['variables'] ?? null) ? $context->inputs['variables'] : [];
+
+        // Redact BEFORE rendering, not after: a redacted-list key wired into
+        // `variables` (a flow author accidentally passing a `password`/
+        // `api_key`/etc. input straight into a prompt) must never reach the
+        // template substitution step, or its value would already be baked
+        // into the outbound prompt string by the time anything downstream
+        // could catch it — this guards the EXTERNAL provider call, a
+        // distinct concern from core's persistence-redaction gate (which
+        // protects what THIS application stores, not what a third-party
+        // service receives).
+        if ($this->redactor !== null) {
+            $variables = $this->redactor->redact($variables);
+        }
 
         try {
             $prompt = $this->render($template, $variables);

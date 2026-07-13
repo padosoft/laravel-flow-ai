@@ -23,4 +23,33 @@ return [
         'timeout_seconds' => env('LARAVEL_FLOW_AI_ANTHROPIC_TIMEOUT_SECONDS', 30),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Guardrails
+    |--------------------------------------------------------------------------
+    |
+    | Enforced by every AI-pack node making an outbound call, BEFORE the call
+    | happens. Every gate below is permissive when left at its default (empty
+    | allowlist / zero rate limit = unrestricted) — the guardrail MECHANISM
+    | always runs, only its rules default to no-op, so tightening these later
+    | needs no code change.
+    |
+    */
+    'guardrails' => [
+        // Node types allowed to make an outbound AI call. Empty = every type
+        // allowed. Example: ['ai.llm.prompt'].
+        'allowed_node_types' => [],
+
+        // Hosts an outbound call may reach. Empty = every host allowed.
+        // Entries are exact hostnames, or a `*.suffix` glob matching any
+        // subdomain of `suffix` (never `suffix` itself). Example:
+        // ['api.anthropic.com'].
+        'egress_allowlist' => [],
+
+        // Maximum outbound calls per node type within the decay window.
+        // 0 = unlimited.
+        'rate_limit_max_attempts' => (int) env('LARAVEL_FLOW_AI_RATE_LIMIT_MAX_ATTEMPTS', 0),
+        'rate_limit_decay_seconds' => (int) env('LARAVEL_FLOW_AI_RATE_LIMIT_DECAY_SECONDS', 60),
+    ],
+
 ];
