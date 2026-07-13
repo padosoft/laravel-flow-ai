@@ -37,6 +37,16 @@ final class StdioMcpTransport implements McpTransport
 {
     private const READ_CHUNK_BYTES = 65536;
 
+    /**
+     * Bounded grace period after SIGTERM before close() escalates to
+     * SIGKILL — keeps node cleanup bounded even against a child that
+     * actively ignores SIGTERM, consistent with this transport's overall
+     * deadline posture (nothing in it is allowed to block indefinitely).
+     */
+    private const TERMINATE_GRACE_SECONDS = 2.0;
+
+    private const TERMINATE_POLL_MICROSECONDS = 50_000;
+
     /** @var resource|null */
     private $process;
 
@@ -216,7 +226,27 @@ final class StdioMcpTransport implements McpTransport
             $status = proc_get_status($this->process);
 
             if ($status['running']) {
+                // SIGTERM (the default signal) asks nicely but can be
+                // ignored — proc_close() below would then block
+                // INDEFINITELY waiting for a child that never exits. Give it
+                // a short bounded grace period, then escalate to SIGKILL
+                // (cannot be caught/ignored), so this method's own worst-case
+                // duration stays bounded regardless of the child's behavior.
                 proc_terminate($this->process);
+
+                $graceDeadline = microtime(true) + self::TERMINATE_GRACE_SECONDS;
+
+                while (microtime(true) < $graceDeadline) {
+                    if (! proc_get_status($this->process)['running']) {
+                        break;
+                    }
+
+                    usleep(self::TERMINATE_POLL_MICROSECONDS);
+                }
+
+                if (proc_get_status($this->process)['running']) {
+                    proc_terminate($this->process, 9);
+                }
             }
 
             proc_close($this->process);
