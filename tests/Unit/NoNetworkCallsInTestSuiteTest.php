@@ -44,15 +44,21 @@ final class NoNetworkCallsInTestSuiteTest extends TestCase
 
             foreach (self::anthropicDriverConstructions($contents) as $hasTransportArgument) {
                 if (! $hasTransportArgument) {
-                    $violations[] = $file->getPathname();
+                    // Keyed by pathname: a file with SEVERAL offending
+                    // constructions must still be reported once, not once
+                    // per construction — the fix is "look at this file", the
+                    // same action regardless of how many violations it has.
+                    $violations[$file->getPathname()] = true;
                 }
             }
         }
 
+        $violatingFiles = array_keys($violations);
+
         self::assertSame(
             [],
-            $violations,
-            'These test files construct AnthropicDriver without an explicit fake transport, risking a real network call: '.implode(', ', $violations),
+            $violatingFiles,
+            'These test files construct AnthropicDriver without an explicit fake transport, risking a real network call: '.implode(', ', $violatingFiles),
         );
     }
 

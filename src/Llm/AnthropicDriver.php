@@ -158,12 +158,24 @@ final class AnthropicDriver implements LlmClient
             }
         }
 
+        // A 2xx response with a missing/malformed `model` is not a
+        // recognizable Anthropic Messages API response at all — fail fast
+        // here rather than let an empty-string model silently propagate
+        // into a caller that keys behavior off it (e.g. cost-per-model
+        // lookups in a future business-impact projection). Unlike `model`,
+        // a missing usage COUNT degrades to a legitimate best-effort value
+        // (0 — undercounted cost, not a systemic parse failure), so those
+        // stay lenient per LlmResponse's own documented contract.
+        if (! is_string($decoded['model'] ?? null) || $decoded['model'] === '') {
+            throw new RuntimeException('Anthropic API response is missing a valid "model" field.');
+        }
+
         /** @var array<string, mixed> $usage */
         $usage = is_array($decoded['usage'] ?? null) ? $decoded['usage'] : [];
 
         return new LlmResponse(
             content: $text,
-            model: is_string($decoded['model'] ?? null) ? $decoded['model'] : '',
+            model: $decoded['model'],
             promptTokens: is_int($usage['input_tokens'] ?? null) ? $usage['input_tokens'] : 0,
             completionTokens: is_int($usage['output_tokens'] ?? null) ? $usage['output_tokens'] : 0,
             stopReason: is_string($decoded['stop_reason'] ?? null) ? $decoded['stop_reason'] : null,

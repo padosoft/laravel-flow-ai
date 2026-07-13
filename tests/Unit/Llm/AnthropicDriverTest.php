@@ -169,6 +169,26 @@ final class AnthropicDriverTest extends TestCase
         self::assertArrayNotHasKey('tool_choice', $decoded);
     }
 
+    public function test_missing_model_field_throws_instead_of_defaulting(): void
+    {
+        $driver = new AnthropicDriver(
+            apiKey: 'test-key',
+            transport: fn (string $url, array $headers, string $body, int $timeout): array => [
+                'status_code' => 200,
+                'body' => json_encode([
+                    'content' => [['type' => 'text', 'text' => 'ok']],
+                    'usage' => ['input_tokens' => 1, 'output_tokens' => 1],
+                ], JSON_THROW_ON_ERROR),
+                'error' => '',
+            ],
+        );
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/missing a valid "model"/');
+
+        $driver->complete(new LlmRequest(prompt: 'q', model: 'claude-x'));
+    }
+
     public function test_non_2xx_status_throws(): void
     {
         $driver = new AnthropicDriver(
