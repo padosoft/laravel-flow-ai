@@ -52,4 +52,18 @@ return [
         'rate_limit_decay_seconds' => (int) env('LARAVEL_FLOW_AI_RATE_LIMIT_DECAY_SECONDS', 60),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | MCP client
+    |--------------------------------------------------------------------------
+    |
+    | Configuration for the built-in ai.mcp.tool node's stdio transport.
+    | Server command/args/tool/arguments are wired INPUT ports, not config
+    | here — this section only tunes the transport itself.
+    |
+    */
+    'mcp' => [
+        'timeout_seconds' => (int) env('LARAVEL_FLOW_AI_MCP_TIMEOUT_SECONDS', 10),
+    ],
+
 ];
