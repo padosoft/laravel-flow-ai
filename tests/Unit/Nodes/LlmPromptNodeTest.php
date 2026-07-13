@@ -6,6 +6,8 @@ namespace Padosoft\LaravelFlowAI\Tests\Unit\Nodes;
 
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Persistence\KeyBasedPayloadRedactor;
+use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\FakeDriver;
 use Padosoft\LaravelFlowAI\Llm\LlmResponse;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
@@ -285,6 +287,39 @@ final class LlmPromptNodeTest extends TestCase
         ]));
 
         $this->assertStringContainsString('still-here-when-redaction-is-disabled', $driver->requests()[0]->prompt);
+    }
+
+    public function test_a_policy_denial_returns_failed_immediately_not_uncaught(): void
+    {
+        // Round-1 review (Codex): PolicyDeniedException thrown by a guarded
+        // client must be caught by the node itself and mapped to
+        // NodeResult::failed(), not left to escape execute() uncaught —
+        // this node is tested in isolation here, with NO core NodeExecutor
+        // in the call stack to catch it as an outer safety net.
+        $inner = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $denyingPolicy = new PolicyEngine(allowedNodeTypes: ['something-else']);
+        $guarded = new GuardedLlmClient($inner, $denyingPolicy, nodeType: 'ai.llm.prompt', targetHost: 'api.anthropic.com');
+        $node = new LlmPromptNode($guarded);
+
+        $result = $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertFalse($result->success);
+        $this->assertNotNull($result->error);
+        $this->assertSame(0, $inner->requestCount(), 'the denial happened before the wrapped client was ever reached');
+    }
+
+    public function test_a_policy_denial_is_not_retried_by_the_schema_loop(): void
+    {
+        $inner = new FakeDriver([]);
+        $denyingPolicy = new PolicyEngine(allowedNodeTypes: ['something-else']);
+        $guarded = new GuardedLlmClient($inner, $denyingPolicy, nodeType: 'ai.llm.prompt', targetHost: 'api.anthropic.com');
+        $node = new LlmPromptNode($guarded, maxAttempts: 3);
+
+        $node->execute($this->context(['template' => 't', 'model' => 'claude-x']));
+
+        $this->assertSame(0, $inner->requestCount(), 'a policy denial fails immediately — it is never retried across attempts');
     }
 
     public function test_dry_run_never_calls_the_llm_client(): void

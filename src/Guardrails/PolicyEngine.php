@@ -57,27 +57,46 @@ final class PolicyEngine
         }
 
         $key = "laravel-flow-ai:policy-rate-limit:{$nodeType}";
-        $attempts = (int) $this->cache->get($key, 0);
 
-        if ($attempts >= $this->rateLimitMaxAttempts) {
+        // FIXED window, race-free under concurrent callers: add() atomically
+        // creates the counter at 0 with the window's TTL ONLY the first time
+        // (a no-op if another concurrent call already created it — the TTL is
+        // therefore anchored to the FIRST hit in the window, never refreshed
+        // by later hits, so this is a fixed window, not an ever-sliding one),
+        // then increment() atomically bumps and returns the new value in one
+        // cache round-trip — no separate get()-then-put() where two
+        // concurrent callers could both read the same pre-increment count and
+        // both pass the threshold check.
+        $this->cache->add($key, 0, $this->rateLimitDecaySeconds);
+        $attempts = $this->cache->increment($key);
+
+        // A non-int return means the cache backend couldn't increment
+        // atomically (an anomaly, not an expected outcome) — fail CLOSED
+        // (deny) rather than open: this gate exists specifically to cap
+        // outbound-call cost/abuse, so silently allowing unlimited calls on
+        // a cache hiccup would defeat its entire purpose.
+        if (! is_int($attempts) || $attempts > $this->rateLimitMaxAttempts) {
             return PolicyDecision::deny(
                 "rate limit exceeded for node type [{$nodeType}] ({$this->rateLimitMaxAttempts} per {$this->rateLimitDecaySeconds}s)"
             );
         }
-
-        // Record BEFORE returning allow(): the call this decision authorizes
-        // is about to happen, so it must count toward the window immediately
-        // — recording only on a later "call completed" signal would let a
-        // burst of concurrent/rapid calls all read the same pre-increment
-        // count and all be allowed, exceeding the limit.
-        $this->cache->put($key, $attempts + 1, $this->rateLimitDecaySeconds);
 
         return PolicyDecision::allow();
     }
 
     private function hostAllowed(string $host): bool
     {
+        // Hostnames are case-insensitive (RFC 4343) and a trailing dot marks
+        // a fully-qualified domain name without changing its identity
+        // ("api.anthropic.com" and "api.anthropic.com." are the same host)
+        // — normalize BOTH the incoming host and every configured pattern
+        // the same way, so an allowlist entered with different casing/an
+        // FQDN trailing dot doesn't silently deny a legitimate host.
+        $host = self::normalizeHost($host);
+
         foreach ($this->egressAllowlist as $pattern) {
+            $pattern = self::normalizeHost($pattern);
+
             if ($pattern === $host) {
                 return true;
             }
@@ -88,5 +107,10 @@ final class PolicyEngine
         }
 
         return false;
+    }
+
+    private static function normalizeHost(string $host): string
+    {
+        return rtrim(strtolower($host), '.');
     }
 }

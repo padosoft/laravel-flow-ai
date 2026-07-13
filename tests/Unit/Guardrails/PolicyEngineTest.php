@@ -6,11 +6,18 @@ namespace Padosoft\LaravelFlowAI\Tests\Unit\Guardrails;
 
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository as CacheRepository;
+use Illuminate\Support\Carbon;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use PHPUnit\Framework\TestCase;
 
 final class PolicyEngineTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
+    }
+
     private function cache(): CacheRepository
     {
         return new CacheRepository(new ArrayStore);
@@ -108,6 +115,71 @@ final class PolicyEngineTest extends TestCase
 
         $this->assertTrue($first->allowed);
         $this->assertTrue($second->allowed);
+    }
+
+    public function test_rate_limit_window_is_fixed_not_extended_by_later_hits(): void
+    {
+        // Round-1 review (Codex): a naive get()/put() implementation resets
+        // the TTL on every allowed call, turning a fixed window into an
+        // ever-sliding one. Pin the FIXED behavior: a hit mid-window must
+        // NOT push the window's expiry further out.
+        Carbon::setTestNow('2026-01-01 00:00:00');
+        $cache = $this->cache();
+        $engine = new PolicyEngine(rateLimitMaxAttempts: 5, rateLimitDecaySeconds: 60, cache: $cache);
+
+        $engine->authorize('ai.llm.prompt', 'api.anthropic.com'); // anchors the window at 00:00:00, expires 00:01:00
+
+        Carbon::setTestNow('2026-01-01 00:00:30'); // 30s later, still inside the original window
+        $engine->authorize('ai.llm.prompt', 'api.anthropic.com'); // must NOT push expiry to 00:01:30
+
+        Carbon::setTestNow('2026-01-01 00:01:01'); // 61s after the FIRST hit — past the original window
+
+        $this->assertNull(
+            $cache->get('laravel-flow-ai:policy-rate-limit:ai.llm.prompt'),
+            'the counter must have expired by the original window boundary, proving the TTL was never refreshed by the second hit'
+        );
+    }
+
+    public function test_a_cache_backend_that_cannot_increment_atomically_fails_closed(): void
+    {
+        // Round-1 review (Codex + Copilot): increment() can return false on
+        // an unusual backend. A rate limiter's job is to CAP calls, so an
+        // anomaly here must deny, never silently allow unlimited calls.
+        // Extends the REAL concrete Repository (backed by a real ArrayStore)
+        // rather than hand-implementing the full Illuminate\Contracts\Cache\
+        // Repository interface (which also extends the PSR-16 CacheInterface
+        // with strictly-typed signatures) — only increment() is overridden.
+        $brokenCache = new class(new ArrayStore) extends CacheRepository
+        {
+            public function increment($key, $value = 1): bool
+            {
+                return false;
+            }
+        };
+
+        $engine = new PolicyEngine(rateLimitMaxAttempts: 5, cache: $brokenCache);
+
+        $decision = $engine->authorize('ai.llm.prompt', 'api.anthropic.com');
+
+        $this->assertFalse($decision->allowed);
+    }
+
+    public function test_egress_allowlist_is_case_insensitive(): void
+    {
+        $engine = new PolicyEngine(egressAllowlist: ['API.Anthropic.COM']);
+
+        $decision = $engine->authorize('ai.llm.prompt', 'api.anthropic.com');
+
+        $this->assertTrue($decision->allowed);
+    }
+
+    public function test_egress_allowlist_ignores_a_trailing_fqdn_dot(): void
+    {
+        $engine = new PolicyEngine(egressAllowlist: ['api.anthropic.com']);
+
+        $decision = $engine->authorize('ai.llm.prompt', 'api.anthropic.com.');
+
+        $this->assertTrue($decision->allowed, 'a trailing FQDN dot does not change host identity');
     }
 
     public function test_node_type_permission_is_checked_before_rate_limit(): void

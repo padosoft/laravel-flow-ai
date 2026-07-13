@@ -15,6 +15,7 @@ use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Node\NodeResult;
 use Padosoft\LaravelFlow\Node\PortType;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
+use Padosoft\LaravelFlowAI\Guardrails\PolicyDeniedException;
 use Padosoft\LaravelFlowAI\Llm\LlmRequest;
 use RuntimeException;
 use stdClass;
@@ -144,7 +145,22 @@ final class LlmPromptNode implements FlowNodeHandler
                 responseSchema: ['type' => 'object'],
             );
 
-            $response = $this->client->complete($request);
+            try {
+                $response = $this->client->complete($request);
+            } catch (PolicyDeniedException $e) {
+                // A policy denial (egress/rate-limit/permission) is an
+                // infra/permission concern, not a data-shape one — it must
+                // NEVER be retried by this loop (retrying would just burn
+                // attempts against a call that denies identically every
+                // time, or worse, mask a genuine misconfiguration as a
+                // schema-validation failure). Fail the node immediately;
+                // core's NodeExecutor would also catch an uncaught
+                // Throwable here, but this node handles it explicitly so
+                // its own behavior is correct and testable in isolation,
+                // not only when driven through the executor.
+                return NodeResult::failed($e);
+            }
+
             $promptTokens += $response->promptTokens;
             $completionTokens += $response->completionTokens;
 

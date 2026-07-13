@@ -8,6 +8,7 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
+use InvalidArgumentException;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
@@ -63,9 +64,29 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                 inner: $driver,
                 policy: $this->policyEngine($app),
                 nodeType: 'ai.llm.prompt',
-                targetHost: (string) (parse_url($baseUrl, PHP_URL_HOST) ?? ''),
+                targetHost: $this->requireHost($baseUrl),
             );
         });
+    }
+
+    /**
+     * Fails fast at container-resolution time on a malformed `base_url`,
+     * rather than silently deriving an empty target host that would produce
+     * confusing egress-allowlist denials (or, worse, an ALWAYS-EMPTY host
+     * that an allowlist entry could accidentally match) later, at CALL time,
+     * far from the actual misconfiguration.
+     */
+    private function requireHost(string $baseUrl): string
+    {
+        $host = parse_url($baseUrl, PHP_URL_HOST);
+
+        if (! is_string($host) || $host === '') {
+            throw new InvalidArgumentException(
+                "laravel-flow-ai.anthropic.base_url [{$baseUrl}] has no parseable host — expected an absolute URL such as https://api.anthropic.com/v1/messages."
+            );
+        }
+
+        return $host;
     }
 
     private function policyEngine(Container $app): PolicyEngine
