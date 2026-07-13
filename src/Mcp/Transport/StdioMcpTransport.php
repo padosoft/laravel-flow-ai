@@ -271,14 +271,7 @@ final class StdioMcpTransport implements McpTransport
                 throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s.");
             }
 
-            // Split into whole seconds + microseconds rather than
-            // (int) ceil($remaining): rounding UP to the next whole second
-            // could let a single read's own timeout extend up to ~1s past
-            // $deadline, undermining the overall-budget guarantee this
-            // method exists to enforce (e.g. 0.1s remaining would otherwise
-            // arm a full 1s read timeout).
-            $seconds = (int) floor($remaining);
-            $microseconds = (int) round(($remaining - $seconds) * 1_000_000);
+            [$seconds, $microseconds] = self::splitTimeout($remaining);
             stream_set_timeout($this->pipes[1], $seconds, $microseconds);
             $line = fgets($this->pipes[1]);
             $meta = stream_get_meta_data($this->pipes[1]);
@@ -305,6 +298,33 @@ final class StdioMcpTransport implements McpTransport
 
             return $line;
         }
+    }
+
+    /**
+     * Splits a remaining-time budget into `stream_set_timeout()`'s
+     * whole-seconds + microseconds pair. Uses `floor()` on BOTH halves, not
+     * `(int) ceil($remaining)` for the seconds and not `round()` for the
+     * microseconds:
+     *  - Rounding the seconds UP would let a single read's own timeout
+     *    extend up to ~1s past the deadline (e.g. 0.1s remaining would
+     *    otherwise arm a full 1s read timeout), undermining the overall
+     *    per-request budget this split exists to enforce.
+     *  - Rounding the microseconds (rather than flooring) can produce
+     *    exactly `1_000_000` when the fractional part is very close to 1.0
+     *    (e.g. `0.9999996`), which is OUT of `stream_set_timeout()`'s valid
+     *    `[0, 999999]` range and has unpredictable behavior across
+     *    platforms. Flooring can only make this one read's own timeout very
+     *    slightly SHORTER than the ideal slice, never longer — the overall
+     *    deadline budget is never violated either way.
+     *
+     * @return array{0: int, 1: int}
+     */
+    private static function splitTimeout(float $remaining): array
+    {
+        $seconds = (int) floor($remaining);
+        $microseconds = (int) floor(($remaining - $seconds) * 1_000_000);
+
+        return [$seconds, $microseconds];
     }
 
     private function ensureStarted(): void
