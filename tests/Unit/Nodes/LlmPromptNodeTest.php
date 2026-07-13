@@ -150,6 +150,23 @@ final class LlmPromptNodeTest extends TestCase
         $this->assertSame([], $result->outputs['result']);
     }
 
+    public function test_business_impact_uses_the_providers_actual_model_not_the_requested_one(): void
+    {
+        // A provider may canonicalize/alias the requested model id or route
+        // to a different one entirely — the ACTUAL model that served the
+        // request (from the response) is what business_impact must report,
+        // not the caller's requested string.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"ok":true}', model: 'claude-3-5-sonnet-20260701', promptTokens: 5, completionTokens: 2),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $result = $node->execute($this->context(['template' => 't', 'model' => 'claude-3-5-sonnet-latest']));
+
+        $this->assertTrue($result->success);
+        $this->assertSame('claude-3-5-sonnet-20260701', $result->businessImpact['model']);
+    }
+
     public function test_retry_cap_exhausted_returns_failed(): void
     {
         $driver = new FakeDriver([

@@ -120,7 +120,11 @@ final class LlmPromptNode implements FlowNodeHandler
             if ($decoded !== null) {
                 return NodeResult::success(
                     ['result' => $decoded],
-                    $this->businessImpact($model, $promptTokens, $completionTokens),
+                    // $response->model, not the requested $model: a provider
+                    // may canonicalize/alias the requested model id or route
+                    // to a different one, so the REQUESTED name can misattribute
+                    // token spend in the reported business impact.
+                    $this->businessImpact($response->model, $promptTokens, $completionTokens),
                 );
             }
 
