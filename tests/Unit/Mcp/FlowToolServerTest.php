@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Tests\Unit\Mcp;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Orchestra\Testbench\TestCase;
 use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
 use Padosoft\LaravelFlow\Contracts\RunRepository;
+use Padosoft\LaravelFlow\Facades\Flow;
 use Padosoft\LaravelFlow\Graph\Connection;
 use Padosoft\LaravelFlow\Graph\GraphDefinition;
 use Padosoft\LaravelFlow\Graph\GraphNode;
@@ -163,6 +165,37 @@ final class FlowToolServerTest extends TestCase
         $this->assertSame(1, EchoFixtureNode::$invocations);
         $decoded = json_decode($result['content'][0]['text'], true, flags: JSON_THROW_ON_ERROR);
         $this->assertSame('hello', $decoded['a']['out']['message']);
+    }
+
+    public function test_status_check_tool_is_denied_when_no_flow_is_visible(): void
+    {
+        // Deny-all authorizer, no exposed flows: listTools() would return []
+        // (the status tool is never advertised), so calling it directly must
+        // be denied too — otherwise a caller could still probe arbitrary run
+        // ids' statuses through a tool it can never see.
+        $server = new FlowToolServer(
+            definitions: $this->app->make(DefinitionRepository::class),
+            runs: $this->app->make(RunRepository::class),
+            authorizer: $this->app->make(McpToolAuthorizer::class), // deny-all default binding
+            exposedFlowNames: [],
+        );
+
+        $this->expectException(McpToolNotFoundException::class);
+        $server->callTool(FlowToolServer::STATUS_CHECK_TOOL_NAME, ['run_id' => 'whatever']);
+    }
+
+    public function test_an_executor_throw_returns_a_generic_message_not_the_raw_exception(): void
+    {
+        $this->publishEchoFlow('echo-flow');
+        $server = $this->allowAllServer(['echo-flow']);
+
+        Log::shouldReceive('error')->once()->with('MCP flow tool call failed.', \Mockery::type('array'));
+        Flow::shouldReceive('runGraph')->once()->andThrow(new \RuntimeException('leaked internal detail'));
+
+        $result = $server->callTool('echo-flow', ['message' => 'hello']);
+
+        $this->assertTrue($result['isError']);
+        $this->assertSame('Flow [echo-flow] execution failed. See application logs for details.', $result['content'][0]['text']);
     }
 
     public function test_approval_pause_resume_integration(): void

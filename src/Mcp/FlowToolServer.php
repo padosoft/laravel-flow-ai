@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI\Mcp;
 
+use Illuminate\Support\Facades\Log;
 use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
 use Padosoft\LaravelFlow\Contracts\RunRepository;
 use Padosoft\LaravelFlow\Executor\State\RunState;
@@ -113,6 +114,15 @@ final class FlowToolServer
     public function callTool(string $name, array $arguments, ?array $actor = null): array
     {
         if ($name === self::STATUS_CHECK_TOOL_NAME) {
+            // Gated by the SAME visibility rule `listTools()` uses to decide
+            // whether to advertise this tool at all (canListTools() plus at
+            // least one exposed+authorized+published flow) — otherwise a
+            // deny-all/empty-allowlist install would still let a caller probe
+            // arbitrary run ids' statuses through a tool it can never see.
+            if ($this->listTools($actor) === []) {
+                throw new McpToolNotFoundException("Unknown MCP tool [{$name}].");
+            }
+
             return $this->checkRunStatus($arguments);
         }
 
@@ -135,8 +145,15 @@ final class FlowToolServer
             // which the executor already turns into a Failed/PartiallySucceeded
             // roll-up) is still a TOOL-level failure from the caller's
             // perspective, not a protocol error — the tool name was valid,
-            // invoking it just didn't work this time.
-            return $this->errorResult($e->getMessage());
+            // invoking it just didn't work this time. The real message is
+            // logged (server-side context for debugging) but never handed to
+            // the caller: an MCP caller is semi-trusted at best, and an
+            // internal exception message can carry details (paths, driver
+            // errors, occasionally payload fragments) it has no business
+            // seeing.
+            Log::error('MCP flow tool call failed.', ['tool' => $name, 'exception' => $e]);
+
+            return $this->errorResult("Flow [{$name}] execution failed. See application logs for details.");
         }
 
         if ($result->state === RunState::Paused) {
