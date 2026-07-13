@@ -233,8 +233,14 @@ final class AnthropicDriver implements LlmClient
             return 0;
         }
 
+        // The status code must be followed by whitespace OR end-of-string,
+        // not unconditional trailing whitespace: an HTTP/2 response line has
+        // no reason phrase (e.g. "HTTP/2 200", not "HTTP/2 200 OK"), so
+        // requiring `\s+` after the digits fails to match it and a genuinely
+        // successful response gets treated as status 0 (verified with
+        // preg_match against both real forms before fixing).
         foreach (array_reverse($headers) as $headerLine) {
-            if (preg_match('/^HTTP\/\S+\s+(\d+)\s+/i', $headerLine, $matches) === 1) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})(?:\s|$)/i', $headerLine, $matches) === 1) {
                 return (int) $matches[1];
             }
         }

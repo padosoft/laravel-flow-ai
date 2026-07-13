@@ -6,7 +6,9 @@ namespace Padosoft\LaravelFlowAI\Tests\Unit\Llm;
 
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
 use Padosoft\LaravelFlowAI\Llm\LlmRequest;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 use RuntimeException;
 
 final class AnthropicDriverTest extends TestCase
@@ -221,6 +223,45 @@ final class AnthropicDriverTest extends TestCase
         $this->expectExceptionMessageMatches('/Connection refused/');
 
         $driver->complete(new LlmRequest(prompt: 'Say hi', model: 'claude-x'));
+    }
+
+    #[DataProvider('statusLineProvider')]
+    public function test_status_code_parsing_handles_reason_phrase_and_http2_no_reason_phrase(string $statusLine, int $expected): void
+    {
+        // No transport call is ever made here — only the private
+        // status-line parser is exercised via reflection — but an explicit
+        // always-throwing transport is still passed so this construction
+        // stays caught by (and provably compliant with) this test suite's
+        // own NoNetworkCallsInTestSuiteTest sweep, rather than needing a
+        // special-cased exception to that structural rule.
+        $driver = new AnthropicDriver(
+            apiKey: 'test-key',
+            transport: static function (string $url, array $headers, string $body, int $timeout): array {
+                throw new RuntimeException('transport must never be called by this test');
+            },
+        );
+        $method = new ReflectionMethod($driver, 'statusCodeFromHeaders');
+
+        $this->assertSame($expected, $method->invoke($driver, [$statusLine]));
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: int}>
+     */
+    public static function statusLineProvider(): array
+    {
+        return [
+            'HTTP/1.1 with reason phrase' => ['HTTP/1.1 200 OK', 200],
+            // HTTP/2 responses have NO reason phrase at all (per the HTTP/2
+            // spec, the status line has no textual reason) — PHP's stream
+            // wrapper synthesizes a bare "HTTP/2 200" line for these, which
+            // an earlier version of this parser's regex failed to match
+            // (required unconditional trailing whitespace after the code),
+            // silently treating a genuinely successful response as status 0.
+            'HTTP/2 without reason phrase' => ['HTTP/2 200', 200],
+            'HTTP/1.1 error with reason phrase' => ['HTTP/1.1 404 Not Found', 404],
+            'not a status line' => ['X-Some-Header: value', 0],
+        ];
     }
 
     private static function anthropicResponseBody(
