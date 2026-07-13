@@ -104,41 +104,11 @@ final class FlowToolServer
             $tools[] = $this->toolDescriptor($name, $definition);
         }
 
-        if ($tools !== []) {
+        if ($tools !== [] && $this->authorizer->canInvokeTool(self::STATUS_CHECK_TOOL_NAME, $actor)) {
             $tools[] = $this->statusCheckToolDescriptor();
         }
 
         return $tools;
-    }
-
-    /**
-     * Same visibility rule `listTools()` uses to decide whether to advertise
-     * `flow.check_run_status` at all (canListTools() plus at least one
-     * exposed+authorized+published flow), but short-circuits on the first
-     * match instead of building every tool descriptor (schema derivation,
-     * repository reads for flows past the first visible one) — the cost
-     * `listTools()` pays is wasted work for a mere gate check on every
-     * status poll.
-     *
-     * @param  array<string, mixed>|null  $actor
-     */
-    private function hasAnyVisibleFlow(?array $actor): bool
-    {
-        if (! $this->authorizer->canListTools($actor)) {
-            return false;
-        }
-
-        foreach ($this->exposedFlowNames as $name) {
-            if (! $this->authorizer->canInvokeTool($name, $actor)) {
-                continue;
-            }
-
-            if ($this->definitions->latest($name, StoredDefinition::STATUS_PUBLISHED) !== null) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -151,11 +121,14 @@ final class FlowToolServer
     public function callTool(string $name, array $arguments, ?array $actor = null): array
     {
         if ($name === self::STATUS_CHECK_TOOL_NAME) {
-            // Gated the same way `listTools()` decides whether to advertise
-            // this tool at all — otherwise a deny-all/empty-allowlist install
-            // would still let a caller probe arbitrary run ids' statuses
-            // through a tool it can never see.
-            if (! $this->hasAnyVisibleFlow($actor)) {
+            // A direct, explicit authorization decision — same as any other
+            // tool name — deliberately NOT derived from canListTools() or
+            // from any single flow's own authorization: an "invoke-only"
+            // actor (one who can call a specific flow but not browse the
+            // catalog) must still be able to poll the run it just started.
+            // See McpToolAuthorizer::canInvokeTool()'s doc for the host-side
+            // contract this relies on.
+            if (! $this->authorizer->canInvokeTool($name, $actor)) {
                 throw new McpToolNotFoundException("Unknown MCP tool [{$name}].");
             }
 

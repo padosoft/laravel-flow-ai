@@ -247,6 +247,47 @@ final class FlowToolServerTest extends TestCase
         // correct, which is what F-PR5 actually adds.
         $this->assertSame('pending', $approvalRecord->status);
     }
+
+    public function test_an_invoke_only_actor_can_still_poll_a_run_it_started(): void
+    {
+        $this->publishEchoFlow('echo-flow');
+        // canListTools() is false (this actor cannot browse the catalog),
+        // but canInvokeTool() allows both the flow and the status tool —
+        // the status-tool gate must not be derived from canListTools().
+        $server = new FlowToolServer(
+            definitions: $this->app->make(DefinitionRepository::class),
+            runs: $this->app->make(RunRepository::class),
+            authorizer: new InvokeOnlyMcpToolAuthorizer,
+            exposedFlowNames: ['echo-flow'],
+        );
+
+        $this->assertSame([], $server->listTools(), 'invoke-only actors see no catalog');
+
+        $result = $server->callTool('echo-flow', ['message' => 'hello']);
+        $this->assertFalse($result['isError']);
+
+        // A bogus run_id still reaches checkRunStatus() (a business-level
+        // "no run found" error, not an authorization rejection) — proving
+        // the status TOOL itself was not denied for this invoke-only actor.
+        // McpToolNotFoundException staying unthrown is the point of this
+        // assertion, not the run lookup outcome.
+        $status = $server->callTool(FlowToolServer::STATUS_CHECK_TOOL_NAME, ['run_id' => 'does-not-exist']);
+        $this->assertTrue($status['isError']);
+        $this->assertSame('No run found for run_id [does-not-exist].', $status['content'][0]['text']);
+    }
+}
+
+final class InvokeOnlyMcpToolAuthorizer implements McpToolAuthorizer
+{
+    public function canListTools(?array $actor): bool
+    {
+        return false;
+    }
+
+    public function canInvokeTool(string $flowName, ?array $actor): bool
+    {
+        return true;
+    }
 }
 
 #[FlowNode(type: 'test.echo', category: 'testing')]

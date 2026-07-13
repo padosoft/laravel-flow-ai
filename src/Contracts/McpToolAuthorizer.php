@@ -40,6 +40,15 @@ interface McpToolAuthorizer
     public function canListTools(?array $actor): bool;
 
     /**
+     * `$flowName` is also called with {@see FlowToolServer::STATUS_CHECK_TOOL_NAME},
+     * the server's built-in status-polling tool — that check is deliberately
+     * NOT tied to `canListTools()` or to any specific flow's own
+     * authorization, so an actor who can invoke a flow but not list the
+     * catalog (an "invoke-only" actor) can still poll the run it started.
+     * A host that wants status polling available whenever ANY flow is
+     * invokable for the actor should special-case this name and return
+     * `true`; a host that wants it opt-in per actor controls that here too.
+     *
      * @param  array<string, mixed>|null  $actor
      */
     public function canInvokeTool(string $flowName, ?array $actor): bool;
