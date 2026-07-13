@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI\Nodes;
 
+use InvalidArgumentException;
 use JsonException;
 use Padosoft\LaravelFlow\Node\Attributes\FlowNode;
 use Padosoft\LaravelFlow\Node\Attributes\Input;
@@ -68,7 +69,11 @@ final class LlmPromptNode implements FlowNodeHandler
     public function __construct(
         private readonly LlmClient $client,
         private readonly int $maxAttempts = self::DEFAULT_MAX_ATTEMPTS,
-    ) {}
+    ) {
+        if ($this->maxAttempts < 1) {
+            throw new InvalidArgumentException("LlmPromptNode maxAttempts must be at least 1, got {$this->maxAttempts}.");
+        }
+    }
 
     public function execute(NodeContext $context): NodeResult
     {

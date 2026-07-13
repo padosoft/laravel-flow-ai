@@ -185,6 +185,15 @@ final class LlmPromptNodeTest extends TestCase
         $this->assertSame(43, $result->businessImpact['tokens']['total']);
     }
 
+    public function test_zero_or_negative_max_attempts_is_rejected_at_construction(): void
+    {
+        $driver = new FakeDriver([]);
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        new LlmPromptNode($driver, maxAttempts: 0);
+    }
+
     public function test_dry_run_never_calls_the_llm_client(): void
     {
         $driver = new FakeDriver([]);
