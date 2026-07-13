@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace Padosoft\LaravelFlowAI\Guardrails;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 
 /**
  * Enforces this package's outbound-call guardrails BEFORE any network call —
- * consulted by {@see GuardedLlmClient} (and, in a future PR, the MCP client
- * node) via a single {@see authorize()} check that covers three independent
+ * consulted by {@see GuardedLlmClient} and {@see McpClientNode} via a single
+ * {@see authorize()} check that covers three independent
  * gates: per-node-type permission, egress host allowlist, and a rate limit.
  * ANY gate denying short-circuits the others (cheapest checks first: no I/O,
  * no cache round-trip, before the rate-limit check that needs one).
@@ -27,7 +28,7 @@ final class PolicyEngine
 {
     /**
      * @param  list<string>  $allowedNodeTypes  empty = every node type allowed
-     * @param  list<string>  $egressAllowlist  empty = every host allowed; entries are exact hostnames or a `*.suffix` glob (matches any subdomain of `suffix`, not `suffix` itself)
+     * @param  list<string>  $egressAllowlist  empty = every host allowed; entries are exact hostnames or a `*.suffix` glob (matches any subdomain of `suffix`, not `suffix` itself) — EXCEPT a `stdio:` prefixed entry (the {@see McpClientNode} pseudo-host for a spawned local command), which is matched as an exact, CASE-SENSITIVE string: lowercasing a shell command name would make an allowlist meant to gate arbitrary local code execution accept a different, unintended executable on a case-sensitive filesystem
      */
     public function __construct(
         private readonly array $allowedNodeTypes = [],
@@ -86,6 +87,19 @@ final class PolicyEngine
 
     private function hostAllowed(string $host): bool
     {
+        // A `stdio:{command}` pseudo-host names a LOCAL COMMAND to spawn, not
+        // a DNS hostname — RFC 4343 case-insensitivity does not apply, and
+        // lowercasing it would let an allowlist entry for one executable
+        // (`stdio:trusted`) also authorize a DIFFERENT one (`stdio:TrUsTeD`)
+        // on a case-sensitive filesystem, silently widening a control meant
+        // to gate arbitrary local code execution. Compare it verbatim
+        // against only the `stdio:`-prefixed allowlist entries — no glob
+        // subdomain semantics either, since that concept doesn't apply to a
+        // command name.
+        if (str_starts_with($host, 'stdio:')) {
+            return in_array($host, $this->egressAllowlist, true);
+        }
+
         // Hostnames are case-insensitive (RFC 4343) and a trailing dot marks
         // a fully-qualified domain name without changing its identity
         // ("api.anthropic.com" and "api.anthropic.com." are the same host)
@@ -95,6 +109,10 @@ final class PolicyEngine
         $host = self::normalizeHost($host);
 
         foreach ($this->egressAllowlist as $pattern) {
+            if (str_starts_with($pattern, 'stdio:')) {
+                continue;
+            }
+
             $pattern = self::normalizeHost($pattern);
 
             if ($pattern === $host) {

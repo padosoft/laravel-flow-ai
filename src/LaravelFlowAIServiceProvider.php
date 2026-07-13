@@ -14,7 +14,10 @@ use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
+use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
+use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransportFactory;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
+use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 
 /**
  * @internal
@@ -28,6 +31,7 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
      */
     private const NODE_HANDLERS = [
         LlmPromptNode::class,
+        McpClientNode::class,
     ];
 
     public function register(): void
@@ -62,9 +66,30 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
 
             return new GuardedLlmClient(
                 inner: $driver,
-                policy: $this->policyEngine($app),
+                policy: $app->make(PolicyEngine::class),
                 nodeType: 'ai.llm.prompt',
                 targetHost: $this->requireHost($baseUrl),
+            );
+        });
+
+        // ONE shared PolicyEngine singleton across every AI-pack node making
+        // an outbound call (currently LlmPromptNode via GuardedLlmClient
+        // above, and McpClientNode resolving this binding directly for its
+        // own PolicyEngine::class parameter) — not a separate instance per
+        // node type. Each gate's cache/allowlist checks are already keyed by
+        // node type internally, so sharing costs nothing and keeps one
+        // config surface (`laravel-flow-ai.guardrails`) governing every
+        // outbound call this package makes, LLM or MCP.
+        $this->app->singleton(PolicyEngine::class, fn (Container $app): PolicyEngine => $this->policyEngine($app));
+
+        $this->app->bind(McpTransportFactory::class, function (Container $app): McpTransportFactory {
+            /** @var array<string, mixed> $mcpConfig */
+            $mcpConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.mcp', []);
+
+            return new StdioMcpTransportFactory(
+                timeoutSeconds: is_numeric($mcpConfig['timeout_seconds'] ?? null) && (int) $mcpConfig['timeout_seconds'] >= 1
+                    ? (int) $mcpConfig['timeout_seconds']
+                    : 10,
             );
         });
     }
