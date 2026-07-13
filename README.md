@@ -25,6 +25,8 @@
 
 ## Installation
 
+> **Not yet installable this way.** `padosoft/laravel-flow` (this package's required dependency) has no tagged release yet — see the development-time note right below. The command below is the FUTURE installation path, once core tags its first release.
+
 ```bash
 composer require padosoft/laravel-flow-ai
 ```
