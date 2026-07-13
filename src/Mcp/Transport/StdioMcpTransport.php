@@ -88,12 +88,25 @@ final class StdioMcpTransport implements McpTransport
 
             $decoded = $this->readMessage($deadline);
 
-            if (! array_key_exists('id', $decoded) || $decoded['id'] === null) {
+            if (! array_key_exists('id', $decoded)) {
+                // The `id` KEY is genuinely absent — a true JSON-RPC
+                // notification (progress, logging, etc.). Keep waiting.
                 continue;
             }
 
-            if ($decoded['id'] !== $id) {
-                throw new McpConnectionException("MCP server response id [{$this->stringifyId($decoded['id'])}] does not match request id [{$id}] — out-of-order responses are not supported by this transport.");
+            $responseId = $decoded['id'];
+
+            // A null `id` is NOT the same as a missing one: JSON-RPC 2.0
+            // reserves it for an ERROR the server could not correlate to any
+            // specific request (e.g. a parse error before it could even
+            // read ours) — a real failure the client is waiting on, not
+            // something to silently skip like a notification. This
+            // transport only ever has ONE request in flight at a time, so a
+            // null-id message is attributed to the current call (the
+            // exact-match check below is simply skipped for it, rather than
+            // rejected as a mismatch).
+            if ($responseId !== null && $responseId !== $id) {
+                throw new McpConnectionException("MCP server response id [{$this->stringifyId($responseId)}] does not match request id [{$id}] — out-of-order responses are not supported by this transport.");
             }
 
             if (array_key_exists('error', $decoded)) {
@@ -229,7 +242,15 @@ final class StdioMcpTransport implements McpTransport
                 throw new McpConnectionException("MCP server [{$this->command}] did not respond within {$this->timeoutSeconds}s.");
             }
 
-            stream_set_timeout($this->pipes[1], (int) ceil($remaining));
+            // Split into whole seconds + microseconds rather than
+            // (int) ceil($remaining): rounding UP to the next whole second
+            // could let a single read's own timeout extend up to ~1s past
+            // $deadline, undermining the overall-budget guarantee this
+            // method exists to enforce (e.g. 0.1s remaining would otherwise
+            // arm a full 1s read timeout).
+            $seconds = (int) floor($remaining);
+            $microseconds = (int) round(($remaining - $seconds) * 1_000_000);
+            stream_set_timeout($this->pipes[1], $seconds, $microseconds);
             $line = fgets($this->pipes[1]);
             $meta = stream_get_meta_data($this->pipes[1]);
 

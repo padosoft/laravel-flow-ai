@@ -67,6 +67,39 @@ final class NoRealMcpSubprocessInTestSuiteTest extends TestCase
         );
     }
 
+    /**
+     * Pins the tokenizer's coverage of every class-reference form PHP 8
+     * actually produces for a `new` expression — same posture as
+     * `NoNetworkCallsInTestSuiteTest::test_sweep_recognizes_every_class_reference_form()`.
+     * Without this, a refactor of the token-walking logic could silently
+     * stop recognizing a qualified/FQN/namespace-relative reference and
+     * this sweep would pass CI while missing real constructions.
+     */
+    public function test_sweep_recognizes_every_class_reference_form(): void
+    {
+        $forbiddenLines = [
+            "new StdioMcpTransport('php', []);",
+            "new Transport\\StdioMcpTransport('php', []);",
+            "new \\Padosoft\\LaravelFlowAI\\Mcp\\Transport\\StdioMcpTransport('php', []);",
+            "new namespace\\StdioMcpTransport('php', []);",
+            'new StdioMcpTransportFactory();',
+        ];
+
+        foreach ($forbiddenLines as $line) {
+            self::assertTrue(self::constructsForbiddenClass("<?php\n{$line}"), $line);
+        }
+
+        $withoutForbidden = <<<'PHP'
+            <?php
+            new FakeMcpTransport();
+            new Transport\FakeMcpTransport();
+            new \Padosoft\LaravelFlowAI\Mcp\Transport\FakeMcpTransport();
+            new namespace\FakeMcpTransport();
+            PHP;
+
+        self::assertFalse(self::constructsForbiddenClass($withoutForbidden));
+    }
+
     private static function constructsForbiddenClass(string $source): bool
     {
         $tokens = token_get_all($source);
