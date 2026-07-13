@@ -9,8 +9,8 @@ use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 
 /**
  * Enforces this package's outbound-call guardrails BEFORE any network call —
- * consulted by {@see GuardedLlmClient} (and, in a future PR, the MCP client
- * node) via a single {@see authorize()} check that covers three independent
+ * consulted by {@see GuardedLlmClient} and {@see McpClientNode} via a single
+ * {@see authorize()} check that covers three independent
  * gates: per-node-type permission, egress host allowlist, and a rate limit.
  * ANY gate denying short-circuits the others (cheapest checks first: no I/O,
  * no cache round-trip, before the rate-limit check that needs one).
