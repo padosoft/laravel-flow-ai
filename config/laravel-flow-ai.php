@@ -64,6 +64,12 @@ return [
     */
     'mcp' => [
         'timeout_seconds' => (int) env('LARAVEL_FLOW_AI_MCP_TIMEOUT_SECONDS', 10),
+
+        // Flow names FlowToolServer may expose as MCP tools. Empty by
+        // default — a listed name still needs a PUBLISHED version AND an
+        // allowing McpToolAuthorizer to actually be visible; this is only
+        // the candidate allowlist. Example: ['send-welcome-email'].
+        'exposed_flows' => [],
     ],
 
 ];
