@@ -138,12 +138,22 @@ final class FlowBuilderService
                 throw new InvalidArgumentException('Each "nodes" entry must be an object.');
             }
 
+            // Explicit is_string() checks, not a (string) cast: PHP coerces
+            // an array value to the literal string "Array" (with a warning,
+            // not an error) rather than failing — a malformed "id"/"type"
+            // field (e.g. the model returning an array where a string was
+            // requested) would otherwise silently build a GARBAGE but
+            // seemingly-valid node instead of a typed failure.
+            if (! is_string($nodeData['id'] ?? null) || ! is_string($nodeData['type'] ?? null)) {
+                throw new InvalidArgumentException('Each "nodes" entry must have string "id" and "type" fields.');
+            }
+
             /** @var array<string, mixed> $config */
             $config = is_array($nodeData['config'] ?? null) ? $nodeData['config'] : [];
 
             $nodes[] = new GraphNode(
-                id: (string) ($nodeData['id'] ?? ''),
-                type: (string) ($nodeData['type'] ?? ''),
+                id: $nodeData['id'],
+                type: $nodeData['type'],
                 config: $config,
             );
         }
@@ -156,11 +166,17 @@ final class FlowBuilderService
                 throw new InvalidArgumentException('Each "connections" entry must be an object.');
             }
 
+            foreach (['from_node', 'from_port', 'to_node', 'to_port'] as $field) {
+                if (! is_string($connectionData[$field] ?? null)) {
+                    throw new InvalidArgumentException("Each \"connections\" entry must have a string \"{$field}\" field.");
+                }
+            }
+
             $connections[] = new Connection(
-                sourceNodeId: (string) ($connectionData['from_node'] ?? ''),
-                sourcePortKey: (string) ($connectionData['from_port'] ?? ''),
-                targetNodeId: (string) ($connectionData['to_node'] ?? ''),
-                targetPortKey: (string) ($connectionData['to_port'] ?? ''),
+                sourceNodeId: $connectionData['from_node'],
+                sourcePortKey: $connectionData['from_port'],
+                targetNodeId: $connectionData['to_node'],
+                targetPortKey: $connectionData['to_port'],
             );
         }
 

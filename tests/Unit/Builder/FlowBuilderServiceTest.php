@@ -119,6 +119,18 @@ final class FlowBuilderServiceTest extends TestCase
                 '{"nodes":[{"id":"a","type":"test.source"}],"connections":[[1,2,3]]}',
                 false,
             ],
+            'a node id that is an array, not a string' => [
+                '{"nodes":[{"id":[],"type":"test.source"}],"connections":[]}',
+                false,
+            ],
+            'a node type that is an array, not a string' => [
+                '{"nodes":[{"id":"a","type":["test.source"]}],"connections":[]}',
+                false,
+            ],
+            'a connection field that is an array, not a string' => [
+                '{"nodes":[{"id":"a","type":"test.source"},{"id":"b","type":"test.sink"}],"connections":[{"from_node":"a","from_port":["out"],"to_node":"b","to_port":"in"}]}',
+                false,
+            ],
         ];
     }
 
