@@ -4,10 +4,26 @@
          bootstrap="vendor/autoload.php"
          colors="true"
          cacheDirectory=".phpunit.cache"
-         defaultTestSuite="Unit">
+         defaultTestSuite="All">
     <testsuites>
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Contract">
+            <directory>tests/Contract</directory>
+        </testsuite>
+        <!-- The ONE suite spawning real subprocesses (a self-contained PHP
+             fixture script) — see NoRealMcpSubprocessInTestSuiteTest's
+             docblock for why this is a single, deliberate exception. -->
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+        <!-- Default: running bare `phpunit` (outside `composer test`) runs
+             every suite, so contract tests are never silently skipped. -->
+        <testsuite name="All">
+            <directory>tests/Unit</directory>
+            <directory>tests/Contract</directory>
+            <directory>tests/Integration</directory>
         </testsuite>
     </testsuites>
     <source>
