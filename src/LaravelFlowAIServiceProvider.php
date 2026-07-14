@@ -12,6 +12,7 @@ use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
 use Padosoft\LaravelFlow\Contracts\RunRepository;
+use Padosoft\LaravelFlowAI\Builder\FlowBuilderService;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Contracts\McpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
@@ -68,6 +69,15 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         $this->app->when(BoundedAgentNode::class)
             ->needs(LlmClient::class)
             ->give(fn (Container $app): LlmClient => $this->guardedLlmClient($app, 'ai.agent.bounded'));
+
+        // Same reasoning again for FlowBuilderService — a THIRD identity,
+        // not a node type at all (this service is invoked directly by
+        // application code, never resolved as a graph node), but the same
+        // guardrail-misattribution risk applies to ANY class sharing the
+        // 'ai.llm.prompt' singleton.
+        $this->app->when(FlowBuilderService::class)
+            ->needs(LlmClient::class)
+            ->give(fn (Container $app): LlmClient => $this->guardedLlmClient($app, 'ai.flow.builder'));
 
         // ONE shared PolicyEngine singleton across every AI-pack node making
         // an outbound call (currently LlmPromptNode via GuardedLlmClient
