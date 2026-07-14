@@ -131,6 +131,14 @@ final class FlowBuilderServiceTest extends TestCase
                 '{"nodes":[{"id":"a","type":"test.source"},{"id":"b","type":"test.sink"}],"connections":[{"from_node":"a","from_port":["out"],"to_node":"b","to_port":"in"}]}',
                 false,
             ],
+            'a node config that is a non-empty JSON array, not an object' => [
+                '{"nodes":[{"id":"a","type":"test.source","config":[1,2,3]}],"connections":[]}',
+                false,
+            ],
+            'a node config that is an empty object is still accepted' => [
+                '{"nodes":[{"id":"a","type":"test.source","config":{}}],"connections":[]}',
+                true,
+            ],
         ];
     }
 

@@ -54,6 +54,27 @@ final class LlmPromptNodeTest extends TestCase
         $this->assertCount(1, $driver->requests());
     }
 
+    public function test_a_nested_object_in_the_response_decodes_recursively_as_an_array(): void
+    {
+        // A shallow (array) cast on the top-level decoded stdClass would
+        // leave a NESTED object (here: "profile") as a stdClass instance
+        // instead of an array — this exact bug already bit BoundedAgentNode
+        // once (F-PR6) via a copy of this same decode pattern.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"profile":{"name":"Ada","tags":["x","y"]}}', model: 'claude-x', promptTokens: 10, completionTokens: 5),
+        ]);
+        $node = new LlmPromptNode($driver);
+
+        $result = $node->execute($this->context([
+            'template' => 'Summarize.',
+            'model' => 'claude-x',
+        ]));
+
+        $this->assertTrue($result->success);
+        $this->assertIsArray($result->outputs['result']['profile']);
+        $this->assertSame(['name' => 'Ada', 'tags' => ['x', 'y']], $result->outputs['result']['profile']);
+    }
+
     public function test_schema_violation_retries_with_error_fed_back_then_succeeds(): void
     {
         $driver = new FakeDriver([

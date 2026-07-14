@@ -121,6 +121,18 @@ final class AnthropicDriver implements LlmClient
     private function parseResponse(string $body): LlmResponse
     {
         try {
+            // Decoded non-associatively FIRST too, purely to recover the
+            // {} vs [] distinction an associative decode destroys: if a
+            // tool_use block's "input" is a genuinely empty JSON OBJECT
+            // `{}` (a valid structured-output response — the caller's
+            // schema may legitimately allow zero required properties), the
+            // associative decode below collapses it to the SAME empty PHP
+            // array `[]` a JSON ARRAY input would produce, and by the time
+            // that happens the distinction is unrecoverable — re-encoding
+            // an empty array below would wrongly emit `[]`, not `{}`, and a
+            // caller requiring a JSON object (LlmPromptNode's structured-
+            // output retry loop) would reject a genuinely valid response.
+            $shape = json_decode($body, false, flags: JSON_THROW_ON_ERROR);
             /** @var array<string, mixed> $decoded */
             $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
@@ -128,10 +140,12 @@ final class AnthropicDriver implements LlmClient
         }
 
         $contentBlocks = is_array($decoded['content'] ?? null) ? $decoded['content'] : [];
+        $shapeContentBlocks = is_array($shape->content ?? null) ? $shape->content : [];
         $text = '';
         $structuredOutput = null;
+        $structuredOutputIsEmptyObject = false;
 
-        foreach ($contentBlocks as $block) {
+        foreach ($contentBlocks as $index => $block) {
             if (! is_array($block)) {
                 continue;
             }
@@ -147,12 +161,19 @@ final class AnthropicDriver implements LlmClient
                 && is_array($block['input'] ?? null)
             ) {
                 $structuredOutput = $block['input'];
+                $shapeBlock = $shapeContentBlocks[$index] ?? null;
+                $structuredOutputIsEmptyObject = $structuredOutput === []
+                    && is_object($shapeBlock)
+                    && ($shapeBlock->input ?? null) instanceof \stdClass;
             }
         }
 
         if ($structuredOutput !== null) {
             try {
-                $text = json_encode($structuredOutput, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $text = json_encode(
+                    $structuredOutputIsEmptyObject ? new \stdClass : $structuredOutput,
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+                );
             } catch (JsonException $e) {
                 throw new RuntimeException('Anthropic structured tool-use response could not be re-encoded: '.$e->getMessage(), previous: $e);
             }

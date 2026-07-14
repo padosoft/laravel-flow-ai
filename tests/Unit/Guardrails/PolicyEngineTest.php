@@ -38,11 +38,11 @@ final class PolicyEngineTest extends TestCase
         $engine = new PolicyEngine(allowedNodeTypes: ['ai.llm.prompt']);
 
         $allowed = $engine->authorize('ai.llm.prompt', 'api.anthropic.com');
-        $denied = $engine->authorize('ai.mcp.client', 'api.anthropic.com');
+        $denied = $engine->authorize('ai.mcp.tool', 'api.anthropic.com');
 
         $this->assertTrue($allowed->allowed);
         $this->assertFalse($denied->allowed);
-        $this->assertStringContainsString('ai.mcp.client', (string) $denied->reason);
+        $this->assertStringContainsString('ai.mcp.tool', (string) $denied->reason);
     }
 
     public function test_egress_allowlist_denies_a_host_not_on_the_list(): void
@@ -88,7 +88,7 @@ final class PolicyEngineTest extends TestCase
         $engine = new PolicyEngine(rateLimitMaxAttempts: 1, cache: $cache);
 
         $first = $engine->authorize('ai.llm.prompt', 'api.anthropic.com');
-        $second = $engine->authorize('ai.mcp.client', 'api.anthropic.com');
+        $second = $engine->authorize('ai.mcp.tool', 'api.anthropic.com');
 
         $this->assertTrue($first->allowed);
         $this->assertTrue($second->allowed, 'a different node type has its own independent rate-limit budget');
@@ -220,9 +220,9 @@ final class PolicyEngineTest extends TestCase
         $cache = $this->cache();
         $engine = new PolicyEngine(allowedNodeTypes: ['ai.llm.prompt'], rateLimitMaxAttempts: 1, cache: $cache);
 
-        $engine->authorize('ai.mcp.client', 'api.anthropic.com');
-        $engine->authorize('ai.mcp.client', 'api.anthropic.com');
+        $engine->authorize('ai.mcp.tool', 'api.anthropic.com');
+        $engine->authorize('ai.mcp.tool', 'api.anthropic.com');
 
-        $this->assertFalse($cache->has('laravel-flow-ai:policy-rate-limit:ai.mcp.client'));
+        $this->assertFalse($cache->has('laravel-flow-ai:policy-rate-limit:ai.mcp.tool'));
     }
 }

@@ -203,24 +203,33 @@ final class LlmPromptNode implements FlowNodeHandler
     private function tryDecodeObject(string $content): array
     {
         try {
-            // Decoded WITHOUT the associative flag on purpose: PHP's
-            // associative json_decode() maps BOTH `{}` and `[]` to the same
-            // empty PHP array, making the two indistinguishable after the
-            // fact. Decoding to objects first lets `{}` come back as an empty
-            // stdClass (a real JSON object) while `[]` comes back as an empty
-            // PHP array (never an object) — the only way to reject an empty
-            // JSON ARRAY while still accepting a legitimately empty `{}`.
-            $decoded = json_decode($content, false, 512, JSON_THROW_ON_ERROR);
+            // Decoded non-associatively FIRST, purely to check the
+            // top-level shape: PHP's associative json_decode() maps BOTH
+            // `{}` and `[]` to the same empty PHP array, making the two
+            // indistinguishable after the fact — decoding to objects first
+            // lets `{}` come back as an empty stdClass (a real JSON object)
+            // while `[]` comes back as an empty PHP array (never an
+            // object), the only way to reject an empty JSON ARRAY while
+            // still accepting a legitimately empty `{}`.
+            $shape = json_decode($content, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
             return [null, "response was not valid JSON: {$e->getMessage()}"];
         }
 
-        if (! ($decoded instanceof stdClass)) {
-            return [null, 'response was valid JSON but not an object (got '.get_debug_type($decoded).')'];
+        if (! ($shape instanceof stdClass)) {
+            return [null, 'response was valid JSON but not an object (got '.get_debug_type($shape).')'];
         }
 
+        // Decoded a SECOND time, associatively, for the actual value: a
+        // shallow `(array) $shape` cast does not recurse into nested
+        // object members (e.g. a nested "profile": {"name": "Ada"} field),
+        // silently leaving them as stdClass instead of array in this
+        // node's `result` output port — a bug this exact copy-paste
+        // pattern already caused once in BoundedAgentNode (F-PR6) and,
+        // caught here on the Macro F gate review, turns out to have been
+        // copied FROM this method in the first place. See docs/LESSON.md.
         /** @var array<string, mixed> $value */
-        $value = (array) $decoded;
+        $value = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
 
         return [$value, null];
     }

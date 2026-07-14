@@ -148,8 +148,21 @@ final class FlowBuilderService
                 throw new InvalidArgumentException('Each "nodes" entry must have string "id" and "type" fields.');
             }
 
+            $configData = $nodeData['config'] ?? null;
+
+            // Same array_is_list() rationale as the entry-shape check above
+            // — a NON-EMPTY JSON ARRAY "config" (e.g. "config":[1,2]) is not
+            // the requested object shape and must be rejected. An EMPTY
+            // array is deliberately exempt: {} (a legitimate empty config
+            // object) and [] decode to the identical PHP `[]` under
+            // associative json_decode(), so rejecting empty arrays here
+            // would also reject every valid no-config node.
+            if ($configData !== null && (! is_array($configData) || ($configData !== [] && array_is_list($configData)))) {
+                throw new InvalidArgumentException('A "nodes" entry\'s "config" must be an object when present.');
+            }
+
             /** @var array<string, mixed> $config */
-            $config = is_array($nodeData['config'] ?? null) ? $nodeData['config'] : [];
+            $config = is_array($configData) ? $configData : [];
 
             $nodes[] = new GraphNode(
                 id: $nodeData['id'],

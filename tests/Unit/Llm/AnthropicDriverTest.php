@@ -150,6 +150,38 @@ final class AnthropicDriverTest extends TestCase
         self::assertSame(['answer' => 'yes'], json_decode($response->content, true, flags: JSON_THROW_ON_ERROR));
     }
 
+    public function test_an_empty_structured_output_object_re_encodes_as_an_object_not_an_array(): void
+    {
+        // {} and [] both decode to the same empty PHP array under
+        // json_decode(..., true) — re-encoding a naively-collapsed empty
+        // array would wrongly emit "[]" for a genuinely valid empty JSON
+        // OBJECT response (a caller's schema may legitimately allow zero
+        // required properties), which LlmPromptNode's structured-output
+        // retry loop would then reject as "not an object".
+        $schema = ['type' => 'object', 'properties' => new \stdClass];
+
+        $driver = new AnthropicDriver(
+            apiKey: 'test-key',
+            transport: function (string $url, array $headers, string $body, int $timeout): array {
+                return [
+                    'status_code' => 200,
+                    'body' => json_encode([
+                        'model' => 'claude-x',
+                        'content' => [
+                            ['type' => 'tool_use', 'name' => 'structured_output', 'input' => new \stdClass],
+                        ],
+                        'usage' => ['input_tokens' => 1, 'output_tokens' => 1],
+                    ], JSON_THROW_ON_ERROR),
+                    'error' => '',
+                ];
+            },
+        );
+
+        $response = $driver->complete(new LlmRequest(prompt: 'q', model: 'claude-x', responseSchema: $schema));
+
+        self::assertSame('{}', $response->content);
+    }
+
     public function test_no_tools_payload_when_no_response_schema_is_requested(): void
     {
         $captured = null;
