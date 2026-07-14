@@ -189,6 +189,30 @@ final class BoundedAgentNodeTest extends TestCase
         $this->assertStringNotContainsString('sk-super-sensitive', json_encode($result->outputs, JSON_THROW_ON_ERROR));
     }
 
+    public function test_a_sensitive_tool_result_never_reaches_the_outbound_prompt(): void
+    {
+        // Redacting only the FINAL stored transcript (the test above) is not
+        // enough: every transcript entry is also embedded into the NEXT
+        // iteration's outbound prompt sent to the EXTERNAL LLM provider —
+        // that must never carry the raw secret either, regardless of what
+        // happens to it afterward.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","tool":"lookup","arguments":{}}', model: 'claude-x', promptTokens: 10, completionTokens: 10),
+            new LlmResponse(content: '{"action":"final_answer","answer":"done"}', model: 'claude-x', promptTokens: 10, completionTokens: 10),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $mcp->transport()->queueResult('tools/call', ['content' => [['type' => 'text', 'text' => 'ssn: 123-45-6789']], 'isError' => false]);
+        $redactor = new KeyBasedPayloadRedactor(enabled: true, keys: ['text'], replacement: '[redacted]');
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['lookup'], redactor: $redactor);
+
+        $node->execute($this->context($this->baseInputs()));
+
+        $this->assertCount(2, $driver->requests());
+        $this->assertStringNotContainsString('123-45-6789', $driver->requests()[1]->prompt, 'the 2nd prompt embeds the transcript from the 1st tool call');
+    }
+
     public function test_a_tool_execution_error_is_fed_back_and_the_loop_continues(): void
     {
         $driver = new FakeDriver([

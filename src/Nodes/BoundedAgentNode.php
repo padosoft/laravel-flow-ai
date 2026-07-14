@@ -311,7 +311,7 @@ final class BoundedAgentNode implements FlowNodeHandler
             // (McpConnectionException — the server itself unreachable — is
             // deliberately left uncaught here and handled by the caller,
             // since retrying within this loop would not fix that).
-            $transcript[] = ['iteration' => $iteration, 'type' => 'tool_error', 'tool' => $tool, 'arguments' => $arguments, 'error' => $e->getMessage()];
+            $transcript[] = $this->redactTranscriptEntry(['iteration' => $iteration, 'type' => 'tool_error', 'tool' => $tool, 'arguments' => $arguments, 'error' => $e->getMessage()]);
 
             return null;
         }
@@ -319,14 +319,39 @@ final class BoundedAgentNode implements FlowNodeHandler
         $pending = $this->pendingApproval($content);
 
         if ($pending !== null) {
-            $transcript[] = ['iteration' => $iteration, 'type' => 'tool_pending_approval', 'tool' => $tool, 'arguments' => $arguments, 'run_id' => $pending['run_id'] ?? null];
+            $transcript[] = $this->redactTranscriptEntry(['iteration' => $iteration, 'type' => 'tool_pending_approval', 'tool' => $tool, 'arguments' => $arguments, 'run_id' => $pending['run_id'] ?? null]);
 
             return $pending;
         }
 
-        $transcript[] = ['iteration' => $iteration, 'type' => 'tool_result', 'tool' => $tool, 'arguments' => $arguments, 'result' => $content];
+        $transcript[] = $this->redactTranscriptEntry(['iteration' => $iteration, 'type' => 'tool_result', 'tool' => $tool, 'arguments' => $arguments, 'result' => $content]);
 
         return null;
+    }
+
+    /**
+     * Redacted at the point of INSERTION, not only once at the end in
+     * {@see success()} — a tool RESULT (unlike arguments, already redacted
+     * before the call above) is never touched otherwise, and every
+     * transcript entry gets embedded verbatim into the NEXT iteration's
+     * outbound LLM prompt via {@see renderIterationPrompt()}. Redacting only
+     * the FINAL stored transcript would protect what this node's own output
+     * carries but do nothing to stop a sensitive tool result leaking to the
+     * external LLM provider on the very next call.
+     *
+     * @param  array<string, mixed>  $entry
+     * @return array<string, mixed>
+     */
+    private function redactTranscriptEntry(array $entry): array
+    {
+        if ($this->redactor === null) {
+            return $entry;
+        }
+
+        /** @var array<string, mixed> $redacted */
+        $redacted = $this->redactor->redact(['entry' => $entry])['entry'];
+
+        return $redacted;
     }
 
     /**
