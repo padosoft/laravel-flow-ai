@@ -193,6 +193,42 @@ final class BoundedAgentNodeTest extends TestCase
         $this->assertSame(1, $driver->requestCount(), 'a connection failure is never retried within the loop');
     }
 
+    public function test_a_tools_list_connection_failure_surfaces_as_a_typed_node_failure(): void
+    {
+        $driver = new FakeDriver([]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueConnectionFailure('tools/list', new McpConnectionException('server unreachable'));
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['echo']);
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertFalse($result->success);
+        $this->assertInstanceOf(McpConnectionException::class, $result->error);
+        $this->assertSame(0, $driver->requestCount(), 'no LLM call is ever made when tool discovery fails');
+    }
+
+    public function test_a_non_encodable_tool_result_surfaces_as_a_typed_node_failure(): void
+    {
+        // Invalid UTF-8 in a tool result poisons the transcript json_encode()
+        // on the NEXT iteration's prompt render — the loop must not throw
+        // uncaught, it must map to a structured NodeResult::failed() like
+        // LlmPromptNode does for its own template-render encoding failures.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","tool":"echo","arguments":{}}', model: 'claude-x', promptTokens: 5, completionTokens: 5),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $mcp->transport()->queueResult('tools/call', ['content' => [['type' => 'text', 'text' => "\xB1\x31invalid-utf8"]], 'isError' => false]);
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['echo'], maxIterations: 5);
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertFalse($result->success);
+        $this->assertInstanceOf(\JsonException::class, $result->error);
+    }
+
     public function test_an_invalid_decision_retries_then_succeeds(): void
     {
         $driver = new FakeDriver([

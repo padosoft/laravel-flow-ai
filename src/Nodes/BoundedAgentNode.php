@@ -163,7 +163,15 @@ final class BoundedAgentNode implements FlowNodeHandler
 
     private function runLoop(McpClient $client, string $task, string $model, string $systemPrompt): NodeResult
     {
-        $tools = $this->describeAllowedTools($client);
+        try {
+            $tools = $this->describeAllowedTools($client);
+        } catch (McpConnectionException $e) {
+            // The initialize/tools/list handshake failing is the SAME class
+            // of failure as a tools/call connection failure below — the
+            // server is unreachable, never retried within this loop.
+            return NodeResult::failed($e);
+        }
+
         $transcript = [];
         $totalPromptTokens = 0;
         $totalCompletionTokens = 0;
@@ -177,8 +185,18 @@ final class BoundedAgentNode implements FlowNodeHandler
                 return NodeResult::failed($budgetViolation);
             }
 
+            try {
+                $prompt = $this->renderIterationPrompt($task, $tools, $transcript, $lastError);
+            } catch (JsonException $e) {
+                // A non-encodable value in $tools/$transcript (invalid
+                // UTF-8 from a tool result, etc.) is a malformed-DATA
+                // problem, not a model-repairable one — same treatment as
+                // LlmPromptNode's own template-render JsonException catch.
+                return NodeResult::failed($e);
+            }
+
             $request = new LlmRequest(
-                prompt: $this->renderIterationPrompt($task, $tools, $transcript, $lastError),
+                prompt: $prompt,
                 model: $model,
                 systemPrompt: $systemPrompt !== '' ? $systemPrompt : null,
                 responseSchema: ['type' => 'object'],
