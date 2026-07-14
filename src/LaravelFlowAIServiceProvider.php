@@ -21,6 +21,7 @@ use Padosoft\LaravelFlowAI\Mcp\Authorization\DenyAllMcpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Mcp\FlowToolServer;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransportFactory;
+use Padosoft\LaravelFlowAI\Nodes\BoundedAgentNode;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 
@@ -37,6 +38,7 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
     private const NODE_HANDLERS = [
         LlmPromptNode::class,
         McpClientNode::class,
+        BoundedAgentNode::class,
     ];
 
     public function register(): void
@@ -46,36 +48,26 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
             'laravel-flow-ai',
         );
 
-        // Bound to the GUARDED client, not the raw driver: every real
-        // consumer of LlmClient::class (currently LlmPromptNode, resolved
-        // through the container) gets policy enforcement transparently,
-        // without needing to know guardrails exist. Node type 'ai.llm.prompt'
-        // is hardcoded here because this binding currently has exactly one
-        // consumer; if a future node type also needs LLM access through this
-        // contract, give IT its own GuardedLlmClient instance (constructed
-        // explicitly for that node, not through this shared singleton) rather
-        // than trying to make one binding serve multiple node identities.
-        $this->app->singleton(LlmClient::class, function (Container $app): LlmClient {
-            /** @var array<string, mixed> $anthropicConfig */
-            $anthropicConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.anthropic', []);
-            $baseUrl = (string) ($anthropicConfig['base_url'] ?? 'https://api.anthropic.com/v1/messages');
+        // Bound to the GUARDED client, not the raw driver, so the default
+        // consumer (LlmPromptNode, resolved through the container) gets
+        // policy enforcement transparently. Node type 'ai.llm.prompt' is
+        // hardcoded here because THIS binding is that node's identity
+        // specifically — a DIFFERENT node type needing its own guarded LLM
+        // identity (see BoundedAgentNode's contextual binding below) gets
+        // its OWN GuardedLlmClient instance, never this shared singleton:
+        // sharing one node-type identity across two node types would let
+        // one node's calls authorize/rate-limit under the WRONG node type
+        // entirely (a host restricting `ai.llm.prompt` via
+        // `guardrails.allowed_node_types` would not actually restrict the
+        // OTHER node's calls, and a rate limit meant for one would be
+        // silently consumed by the other).
+        $this->app->singleton(LlmClient::class, fn (Container $app): LlmClient => $this->guardedLlmClient($app, 'ai.llm.prompt'));
 
-            $driver = new AnthropicDriver(
-                apiKey: (string) ($anthropicConfig['api_key'] ?? ''),
-                baseUrl: $baseUrl,
-                apiVersion: (string) ($anthropicConfig['api_version'] ?? '2023-06-01'),
-                timeoutSeconds: is_numeric($anthropicConfig['timeout_seconds'] ?? null) && (int) $anthropicConfig['timeout_seconds'] >= 1
-                    ? (int) $anthropicConfig['timeout_seconds']
-                    : 30,
-            );
-
-            return new GuardedLlmClient(
-                inner: $driver,
-                policy: $app->make(PolicyEngine::class),
-                nodeType: 'ai.llm.prompt',
-                targetHost: $this->requireHost($baseUrl),
-            );
-        });
+        // BoundedAgentNode's own LLM calls must authorize/rate-limit under
+        // ITS OWN node type, not 'ai.llm.prompt' — see the comment above.
+        $this->app->when(BoundedAgentNode::class)
+            ->needs(LlmClient::class)
+            ->give(fn (Container $app): LlmClient => $this->guardedLlmClient($app, 'ai.agent.bounded'));
 
         // ONE shared PolicyEngine singleton across every AI-pack node making
         // an outbound call (currently LlmPromptNode via GuardedLlmClient
@@ -115,6 +107,71 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                 exposedFlowNames: array_values(array_filter((array) ($mcpConfig['exposed_flows'] ?? []), 'is_string')),
             );
         });
+
+        // BoundedAgentNode's scalar/array budget+allowlist params have no
+        // class type for the container to auto-resolve — a contextual
+        // binding is the only way a container-built instance (the normal
+        // path when a graph runs this node) picks up host config instead of
+        // silently falling back to the constructor's bare defaults.
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$allowedTools')
+            ->give(fn (Container $app): array => array_values(array_filter(
+                (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.allowed_tools', []),
+                'is_string',
+            )));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxIterations')
+            ->give(fn (Container $app): int => (int) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_iterations', 5));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxTotalTokens')
+            ->give(fn (Container $app): int => (int) $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_total_tokens', 4000));
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$maxCostUsd')
+            ->give(function (Container $app): ?float {
+                $value = $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.max_cost_usd');
+
+                return is_numeric($value) ? (float) $value : null;
+            });
+
+        $this->app->when(BoundedAgentNode::class)
+            ->needs('$costPerThousandTokens')
+            ->give(function (Container $app): ?float {
+                $value = $app->make(ConfigRepository::class)->get('laravel-flow-ai.agent.cost_per_thousand_tokens');
+
+                return is_numeric($value) ? (float) $value : null;
+            });
+    }
+
+    /**
+     * Builds a fresh `AnthropicDriver` wrapped in a `GuardedLlmClient`
+     * scoped to `$nodeType` — one instance per CALLING node type, never
+     * shared, so each node's calls authorize/rate-limit under its own
+     * identity (see the two callers' comments in `register()`).
+     */
+    private function guardedLlmClient(Container $app, string $nodeType): LlmClient
+    {
+        /** @var array<string, mixed> $anthropicConfig */
+        $anthropicConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.anthropic', []);
+        $baseUrl = (string) ($anthropicConfig['base_url'] ?? 'https://api.anthropic.com/v1/messages');
+
+        $driver = new AnthropicDriver(
+            apiKey: (string) ($anthropicConfig['api_key'] ?? ''),
+            baseUrl: $baseUrl,
+            apiVersion: (string) ($anthropicConfig['api_version'] ?? '2023-06-01'),
+            timeoutSeconds: is_numeric($anthropicConfig['timeout_seconds'] ?? null) && (int) $anthropicConfig['timeout_seconds'] >= 1
+                ? (int) $anthropicConfig['timeout_seconds']
+                : 30,
+        );
+
+        return new GuardedLlmClient(
+            inner: $driver,
+            policy: $app->make(PolicyEngine::class),
+            nodeType: $nodeType,
+            targetHost: $this->requireHost($baseUrl),
+        );
     }
 
     /**
