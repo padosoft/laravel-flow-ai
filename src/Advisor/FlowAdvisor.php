@@ -109,13 +109,62 @@ final class FlowAdvisor
         );
     }
 
+    /**
+     * A key-based `PayloadRedactor` (core's `KeyBasedPayloadRedactor`, the
+     * usual binding) matches on DICT KEYS — it cannot catch a secret
+     * embedded INSIDE a free-text string value like `Analyzers\FailureHotspotAnalyzer`'s
+     * `sample_error_messages` (a list of raw exception message TEXT, e.g.
+     * "db connection failed: password=hunter2"). Core has its own
+     * `Persistence\ErrorMessageRedactor` for exactly this free-text case,
+     * but it is `@internal` — this package cannot depend on it directly
+     * per this program's `@api`/`@internal` stability discipline, so
+     * {@see stripFreeTextSecrets()} is a small, independently-maintained
+     * equivalent scoped to this package's own rationale payloads: an
+     * unconditional `Bearer <token>` strip (the single highest-value,
+     * always-safe heuristic) plus a best-effort `key=value`/`key: value`
+     * scrub for a small fixed set of common secret-ish key names. This is
+     * NOT a substitute for a host's own logging discipline — it exists so
+     * a raw exception message can never reach a PERSISTED draft version
+     * carrying an obviously-shaped secret untouched.
+     */
     private function redactFinding(Finding $finding): Finding
     {
-        if ($this->redactor === null) {
-            return $finding;
+        $rationale = $this->stripFreeTextSecrets($finding->rationale);
+
+        if ($this->redactor !== null) {
+            $rationale = $this->redactor->redact($rationale);
         }
 
-        return new Finding($finding->type, $finding->summary, $this->redactor->redact($finding->rationale));
+        return new Finding($finding->type, $finding->summary, $rationale);
+    }
+
+    /**
+     * @param  array<string, mixed>  $value
+     * @return array<string, mixed>
+     */
+    private function stripFreeTextSecrets(array $value): array
+    {
+        foreach ($value as $key => $item) {
+            if (is_string($item)) {
+                $value[$key] = $this->stripFreeTextSecretsFromString($item);
+            } elseif (is_array($item)) {
+                /** @var array<string, mixed> $item */
+                $value[$key] = $this->stripFreeTextSecrets($item);
+            }
+        }
+
+        return $value;
+    }
+
+    private function stripFreeTextSecretsFromString(string $text): string
+    {
+        $text = preg_replace('/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i', 'Bearer [redacted]', $text) ?? $text;
+
+        return preg_replace_callback(
+            '/\b(password|secret|token|api[_-]?key|authorization)\b(\s*[:=]\s*)([^\s,;]+)/i',
+            static fn (array $matches): string => $matches[1].$matches[2].'[redacted]',
+            $text,
+        ) ?? $text;
     }
 
     /**

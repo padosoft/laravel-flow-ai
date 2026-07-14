@@ -151,6 +151,35 @@ final class FlowAdvisorTest extends TestCase
         $this->assertStringNotContainsString('sk-super-secret', json_encode($stored->graph, JSON_THROW_ON_ERROR));
     }
 
+    public function test_a_secret_embedded_in_free_text_error_messages_is_stripped_even_without_a_configured_redactor(): void
+    {
+        // Distinct from the test above: NO PayloadRedactor is bound at all
+        // here (KeyBasedPayloadRedactor matches on DICT KEYS — it cannot
+        // catch a secret embedded INSIDE free-text prose regardless of
+        // configuration), so this proves FlowAdvisor's own unconditional
+        // free-text heuristic, not the bound redactor.
+        $this->publishFlow('bearer-flow');
+        $this->seedRuns('bearer-flow', [
+            ['status' => 'failed', 'errorClass' => 'RuntimeException', 'errorMessage' => 'upstream call failed: Bearer sk-live-abc123secret rejected, password=hunter2also'],
+            ['status' => 'failed', 'errorClass' => 'RuntimeException', 'errorMessage' => 'upstream call failed: Bearer sk-live-abc123secret rejected, password=hunter2also'],
+            ['status' => 'succeeded'],
+        ]);
+        $advisor = $this->advisor([new FailureHotspotAnalyzer(minFailureRate: 0.3, minSamples: 3)]);
+
+        $suggestions = $advisor->improve('bearer-flow');
+
+        $this->assertNotEmpty($suggestions);
+        $encoded = json_encode(array_map(static fn ($s) => $s->finding->rationale, $suggestions), JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('sk-live-abc123secret', $encoded);
+        $this->assertStringNotContainsString('hunter2also', $encoded);
+        $this->assertStringContainsString('Bearer [redacted]', $encoded);
+
+        $stored = $this->app->make(DefinitionRepository::class)->find('bearer-flow', $suggestions[0]->draftVersion);
+        $storedJson = json_encode($stored->graph, JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('sk-live-abc123secret', $storedJson);
+        $this->assertStringNotContainsString('hunter2also', $storedJson);
+    }
+
     public function test_improve_returns_an_empty_list_when_no_analyzer_finds_anything(): void
     {
         $this->publishFlow('clean-flow');
