@@ -53,5 +53,6 @@ final class ImproveFlowCommand extends Command
             $suggestion->finding->summary,
             $suggestion->draftVersionId(),
         ));
+        $this->line('  rationale: '.json_encode($suggestion->finding->rationale, JSON_THROW_ON_ERROR));
     }
 }

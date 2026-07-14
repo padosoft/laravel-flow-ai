@@ -87,7 +87,7 @@ final class FlowAdvisorTest extends TestCase
         }
     }
 
-    private function advisor(array $analyzers, ?KeyBasedPayloadRedactor $redactor = null): FlowAdvisor
+    private function advisor(array $analyzers, ?KeyBasedPayloadRedactor $redactor = null, int $sampleSize = 50): FlowAdvisor
     {
         return new FlowAdvisor(
             readModel: $this->app->make(FlowDashboardReadModel::class),
@@ -95,6 +95,7 @@ final class FlowAdvisorTest extends TestCase
             analyzers: $analyzers,
             exposedFlowNames: [],
             redactor: $redactor,
+            sampleSize: $sampleSize,
         );
     }
 
@@ -184,6 +185,27 @@ final class FlowAdvisorTest extends TestCase
         $names = array_unique(array_map(static fn ($s) => $s->definitionName, $suggestions));
         sort($names);
         $this->assertSame(['flaky-flow-a', 'flaky-flow-b'], $names);
+    }
+
+    public function test_a_zero_sample_size_does_not_throw(): void
+    {
+        // Pagination's own constructor throws on a sub-1 perPage — a
+        // misconfigured advisor.sample_size of 0 (or negative) must be
+        // clamped before it ever reaches Pagination, not crash the advisor.
+        $this->publishFlow('flaky-flow');
+        $this->seedRuns('flaky-flow', [
+            ['status' => 'failed', 'errorClass' => 'RuntimeException'],
+            ['status' => 'failed', 'errorClass' => 'RuntimeException'],
+            ['status' => 'succeeded'],
+        ]);
+        $advisor = $this->advisor([new FailureHotspotAnalyzer(minFailureRate: 0.3, minSamples: 3)], sampleSize: 0);
+
+        // The point of this test is that it does not throw — a sampleSize
+        // clamped down to 1 legitimately starves the minSamples:3 analyzer
+        // of enough history to find anything, which is fine; crashing is not.
+        $suggestions = $advisor->improve('flaky-flow');
+
+        $this->assertIsArray($suggestions);
     }
 }
 

@@ -80,6 +80,8 @@ final class FlowAdvisorCommandsTest extends TestCase
         $this->assertSame(0, $exitCode);
         $this->assertStringContainsString('failure_hotspot', $output);
         $this->assertStringContainsString('improve-target@2', $output);
+        $this->assertStringContainsString('rationale:', $output);
+        $this->assertStringContainsString('"node_id":"a"', $output);
     }
 
     public function test_flow_suggest_emits_rationale_and_a_draft_version_id(): void
@@ -92,6 +94,8 @@ final class FlowAdvisorCommandsTest extends TestCase
         $this->assertSame(0, $exitCode);
         $this->assertStringContainsString('failure_hotspot', $output);
         $this->assertStringContainsString('suggest-target@2', $output);
+        $this->assertStringContainsString('rationale:', $output);
+        $this->assertStringContainsString('"node_id":"a"', $output);
     }
 
     public function test_flow_improve_reports_no_suggestions_gracefully(): void

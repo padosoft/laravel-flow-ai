@@ -68,7 +68,7 @@ final class FlowAdvisor
         $suggestions = [];
 
         foreach ($this->candidateDefinitionNames() as $definitionName) {
-            $suggestions = [...$suggestions, ...$this->improve($definitionName)];
+            array_push($suggestions, ...$this->improve($definitionName));
         }
 
         return $suggestions;
@@ -88,7 +88,7 @@ final class FlowAdvisor
         $findings = [];
 
         foreach ($this->analyzers as $analyzer) {
-            $findings = [...$findings, ...$analyzer->analyze($definitionName, $runs)];
+            array_push($findings, ...$analyzer->analyze($definitionName, $runs));
         }
 
         if ($findings === []) {
@@ -157,7 +157,11 @@ final class FlowAdvisor
     private function sampleRuns(string $definitionName): array
     {
         $filter = new RunFilter(definitionName: $definitionName);
-        $page = $this->readModel->listRuns($filter, new Pagination(page: 1, perPage: min($this->sampleSize, Pagination::MAX_PER_PAGE)));
+        // Clamped to [1, MAX_PER_PAGE]: Pagination's own constructor throws
+        // on a sub-1 perPage, so a misconfigured advisor.sample_size (0 or
+        // negative) must never reach it directly.
+        $perPage = max(1, min($this->sampleSize, Pagination::MAX_PER_PAGE));
+        $page = $this->readModel->listRuns($filter, new Pagination(page: 1, perPage: $perPage));
 
         $details = [];
 
