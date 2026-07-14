@@ -46,6 +46,39 @@ final class BoundedAgentNodeTest extends TestCase
         $this->assertSame(15, $result->businessImpact['tokens']['total']);
     }
 
+    public function test_business_impact_reports_the_providers_actual_model_not_the_requested_one(): void
+    {
+        // A provider may canonicalize/alias/route the requested model id —
+        // reporting the REQUESTED name would misattribute token spend.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"final_answer","answer":"ok"}', model: 'claude-x-canonical-2026-07', promptTokens: 10, completionTokens: 5),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $node = new BoundedAgentNode($driver, $mcp);
+
+        $result = $node->execute($this->context($this->baseInputs(['model' => 'claude-x'])));
+
+        $this->assertSame('claude-x-canonical-2026-07', $result->businessImpact['model']);
+    }
+
+    public function test_a_pending_approval_halt_also_reports_the_providers_actual_model(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","tool":"risky-flow","arguments":{}}', model: 'claude-x-canonical', promptTokens: 5, completionTokens: 5),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $pendingJson = json_encode(['status' => 'pending_approval', 'run_id' => 'run-1', 'message' => 'x'], JSON_THROW_ON_ERROR);
+        $mcp->transport()->queueResult('tools/call', ['content' => [['type' => 'text', 'text' => $pendingJson]], 'isError' => false]);
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['risky-flow']);
+
+        $result = $node->execute($this->context($this->baseInputs(['model' => 'claude-x'])));
+
+        $this->assertSame('claude-x-canonical', $result->businessImpact['model']);
+    }
+
     public function test_budget_exhaustion_halts_with_distinct_state(): void
     {
         // Iteration 1's response alone already exceeds the 100-token budget,

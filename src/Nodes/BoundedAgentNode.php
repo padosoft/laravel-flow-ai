@@ -177,6 +177,12 @@ final class BoundedAgentNode implements FlowNodeHandler
         $totalCompletionTokens = 0;
         $totalCostUsd = 0.0;
         $lastError = null;
+        // The REQUESTED model, overwritten with the provider's ACTUAL
+        // returned model after the first response — a provider may
+        // canonicalize/alias/route the requested id, so reporting the
+        // requested name in business impact can misattribute token spend
+        // (same reasoning as LlmPromptNode::businessImpact()).
+        $lastResponseModel = $model;
 
         for ($iteration = 1; $iteration <= $this->maxIterations; $iteration++) {
             $budgetViolation = $this->checkBudgets($iteration, $totalPromptTokens + $totalCompletionTokens, $totalCostUsd);
@@ -214,6 +220,7 @@ final class BoundedAgentNode implements FlowNodeHandler
             $totalPromptTokens += $response->promptTokens;
             $totalCompletionTokens += $response->completionTokens;
             $totalCostUsd += $this->costOf($response->promptTokens + $response->completionTokens);
+            $lastResponseModel = $response->model;
 
             [$decision, $lastError] = $this->tryDecodeDecision($response->content);
 
@@ -228,7 +235,7 @@ final class BoundedAgentNode implements FlowNodeHandler
             if ($action === 'final_answer') {
                 return $this->success('final_answer', [
                     'answer' => (string) ($decision['answer'] ?? ''),
-                ], $transcript, $model, $totalPromptTokens, $totalCompletionTokens);
+                ], $transcript, $lastResponseModel, $totalPromptTokens, $totalCompletionTokens);
             }
 
             if ($action !== 'call_tool') {
@@ -272,7 +279,7 @@ final class BoundedAgentNode implements FlowNodeHandler
             }
 
             if ($outcome !== null) {
-                return $this->success('pending_approval', $outcome, $transcript, $model, $totalPromptTokens, $totalCompletionTokens);
+                return $this->success('pending_approval', $outcome, $transcript, $lastResponseModel, $totalPromptTokens, $totalCompletionTokens);
             }
 
             $lastError = null;
