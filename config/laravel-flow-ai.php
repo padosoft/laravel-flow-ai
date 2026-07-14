@@ -95,4 +95,22 @@ return [
         'cost_per_thousand_tokens' => env('LARAVEL_FLOW_AI_AGENT_COST_PER_THOUSAND_TOKENS'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Flow Advisor
+    |--------------------------------------------------------------------------
+    |
+    | Thresholds for the deterministic (no LLM) history analyzers `flow:suggest`
+    | and `flow:improve {flow}` run. sample_size is capped at core's dashboard
+    | read model page-size ceiling (200) regardless of this value.
+    |
+    */
+    'advisor' => [
+        'sample_size' => (int) env('LARAVEL_FLOW_AI_ADVISOR_SAMPLE_SIZE', 50),
+        'min_samples' => (int) env('LARAVEL_FLOW_AI_ADVISOR_MIN_SAMPLES', 3),
+        'min_failure_rate' => (float) env('LARAVEL_FLOW_AI_ADVISOR_MIN_FAILURE_RATE', 0.3),
+        'duration_std_deviations' => (float) env('LARAVEL_FLOW_AI_ADVISOR_DURATION_STD_DEVIATIONS', 2.0),
+        'repeated_segment_min_runs' => (int) env('LARAVEL_FLOW_AI_ADVISOR_REPEATED_SEGMENT_MIN_RUNS', 3),
+    ],
+
 ];

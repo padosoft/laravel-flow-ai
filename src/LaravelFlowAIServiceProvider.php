@@ -11,8 +11,17 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
+use Padosoft\LaravelFlow\Contracts\PayloadRedactor;
 use Padosoft\LaravelFlow\Contracts\RunRepository;
+use Padosoft\LaravelFlow\Dashboard\FlowDashboardReadModel;
+use Padosoft\LaravelFlowAI\Advisor\Analyzers\DurationOutlierAnalyzer;
+use Padosoft\LaravelFlowAI\Advisor\Analyzers\FailureHotspotAnalyzer;
+use Padosoft\LaravelFlowAI\Advisor\Analyzers\RepeatedSegmentAnalyzer;
+use Padosoft\LaravelFlowAI\Advisor\Analyzers\UnusedToolAnalyzer;
+use Padosoft\LaravelFlowAI\Advisor\FlowAdvisor;
 use Padosoft\LaravelFlowAI\Builder\FlowBuilderService;
+use Padosoft\LaravelFlowAI\Console\Commands\ImproveFlowCommand;
+use Padosoft\LaravelFlowAI\Console\Commands\SuggestFlowsCommand;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Contracts\McpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Guardrails\GuardedLlmClient;
@@ -153,6 +162,46 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
 
                 return is_numeric($value) ? (float) $value : null;
             });
+
+        $this->app->bind(FlowAdvisor::class, function (Container $app): FlowAdvisor {
+            /** @var array<string, mixed> $config */
+            $config = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.advisor', []);
+            /** @var array<string, mixed> $mcpConfig */
+            $mcpConfig = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.mcp', []);
+            $exposedFlowNames = array_values(array_filter((array) ($mcpConfig['exposed_flows'] ?? []), 'is_string'));
+
+            $redactor = null;
+
+            try {
+                $redactor = $app->make(PayloadRedactor::class);
+            } catch (BindingResolutionException) {
+                // Same "optional dependency, narrowly caught" posture as
+                // policyEngine()'s cache lookup above — a harness that never
+                // bound this makes redaction a no-op, not a hard failure.
+            }
+
+            return new FlowAdvisor(
+                readModel: $app->make(FlowDashboardReadModel::class),
+                definitions: $app->make(DefinitionRepository::class),
+                analyzers: [
+                    new FailureHotspotAnalyzer(
+                        minFailureRate: is_numeric($config['min_failure_rate'] ?? null) ? (float) $config['min_failure_rate'] : 0.3,
+                        minSamples: is_numeric($config['min_samples'] ?? null) ? (int) $config['min_samples'] : 3,
+                    ),
+                    new DurationOutlierAnalyzer(
+                        stdDeviations: is_numeric($config['duration_std_deviations'] ?? null) ? (float) $config['duration_std_deviations'] : 2.0,
+                        minSamples: is_numeric($config['min_samples'] ?? null) ? (int) $config['min_samples'] : 5,
+                    ),
+                    new RepeatedSegmentAnalyzer(
+                        minRuns: is_numeric($config['repeated_segment_min_runs'] ?? null) ? (int) $config['repeated_segment_min_runs'] : 3,
+                    ),
+                    new UnusedToolAnalyzer($exposedFlowNames),
+                ],
+                exposedFlowNames: $exposedFlowNames,
+                redactor: $redactor,
+                sampleSize: is_numeric($config['sample_size'] ?? null) ? (int) $config['sample_size'] : 50,
+            );
+        });
     }
 
     /**
@@ -273,5 +322,10 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/laravel-flow-ai.php' => $this->app->configPath('laravel-flow-ai.php'),
         ], 'laravel-flow-ai-config');
+
+        $this->commands([
+            SuggestFlowsCommand::class,
+            ImproveFlowCommand::class,
+        ]);
     }
 }
