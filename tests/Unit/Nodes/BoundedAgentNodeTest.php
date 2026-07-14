@@ -111,6 +111,28 @@ final class BoundedAgentNodeTest extends TestCase
         $this->assertSame([], $toolCalls, 'the disallowed tool was never actually called');
     }
 
+    public function test_a_missing_tool_name_self_repairs_instead_of_halting_as_an_allowlist_violation(): void
+    {
+        // An empty tool name is a MALFORMED decision, not a security
+        // violation — it must never masquerade as an allowlist denial (an
+        // empty string is never actually configured in $allowedTools).
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","arguments":{}}', model: 'claude-x', promptTokens: 5, completionTokens: 5),
+            new LlmResponse(content: '{"action":"final_answer","answer":"recovered"}', model: 'claude-x', promptTokens: 5, completionTokens: 5),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['echo'], maxIterations: 5);
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertTrue($result->success);
+        $this->assertSame('recovered', $result->outputs['result']['answer']);
+        $this->assertSame('invalid_decision', $result->outputs['result']['transcript'][0]['type']);
+        $this->assertStringContainsString('missing a "tool" name', $driver->requests()[1]->prompt);
+    }
+
     public function test_loop_transcript_persisted_redacted(): void
     {
         $driver = new FakeDriver([
@@ -269,6 +291,29 @@ final class BoundedAgentNodeTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
 
         new BoundedAgentNode(new FakeDriver([]), new FakeMcpTransportFactory, maxTotalTokens: 0);
+    }
+
+    public function test_a_zero_max_cost_usd_without_a_rate_is_still_a_noop(): void
+    {
+        // The sharpest form of the "cost gate needs a rate" regression: a
+        // maxCostUsd of exactly 0.0 would make `$costSoFar >= $maxCostUsd`
+        // true on iteration 2's very first check (0.0 >= 0.0) if the gate
+        // were keyed on maxCostUsd alone — it must ALSO require
+        // costPerThousandTokens before enforcing anything.
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","tool":"echo","arguments":{}}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+            new LlmResponse(content: '{"action":"final_answer","answer":"done"}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $mcp->transport()->queueResult('tools/call', ['content' => [], 'isError' => false]);
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['echo'], maxIterations: 5, maxTotalTokens: 1_000_000, maxCostUsd: 0.0);
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertTrue($result->success);
+        $this->assertSame(2, $driver->requestCount());
     }
 
     public function test_cost_budget_is_a_noop_without_a_configured_rate(): void

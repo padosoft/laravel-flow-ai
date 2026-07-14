@@ -224,6 +224,18 @@ final class BoundedAgentNode implements FlowNodeHandler
             /** @var array<string, mixed> $arguments */
             $arguments = is_array($decision['arguments'] ?? null) ? $decision['arguments'] : [];
 
+            if ($tool === '') {
+                // A missing/empty tool name is a malformed DECISION, not a
+                // security violation — self-repairable like any other
+                // wrongly-shaped response, not a hard allowlist halt (an
+                // empty string is never actually in $this->allowedTools, so
+                // without this check it would misleadingly present as one).
+                $lastError = 'call_tool decision is missing a "tool" name';
+                $transcript[] = ['iteration' => $iteration, 'type' => 'invalid_decision', 'reason' => $lastError];
+
+                continue;
+            }
+
             if (! in_array($tool, $this->allowedTools, true)) {
                 return NodeResult::failed(new AgentToolNotAllowedException(
                     $tool,
@@ -336,7 +348,11 @@ final class BoundedAgentNode implements FlowNodeHandler
             return new AgentBudgetExhaustedException('tokens', "BoundedAgentNode: exhausted the {$this->maxTotalTokens}-token budget ({$tokensSoFar} used) before reaching a final answer.");
         }
 
-        if ($this->maxCostUsd !== null && $costSoFar >= $this->maxCostUsd) {
+        // Cost enforcement requires a RATE (costOf() cannot compute a real
+        // cost without one, and always returns 0.0 in its absence) — gating
+        // on $maxCostUsd alone would halt every run immediately once
+        // maxCostUsd <= 0.0, even though no real cost was ever computed.
+        if ($this->maxCostUsd !== null && $this->costPerThousandTokens !== null && $costSoFar >= $this->maxCostUsd) {
             return new AgentBudgetExhaustedException('cost', sprintf('BoundedAgentNode: exhausted the $%.4f cost budget ($%.4f used) before reaching a final answer.', $this->maxCostUsd, $costSoFar));
         }
 

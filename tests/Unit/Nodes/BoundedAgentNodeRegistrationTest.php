@@ -8,8 +8,10 @@ use Orchestra\Testbench\TestCase;
 use Padosoft\LaravelFlow\LaravelFlowServiceProvider;
 use Padosoft\LaravelFlow\Node\NodeRegistry;
 use Padosoft\LaravelFlow\Node\PortType;
+use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\LaravelFlowAIServiceProvider;
 use Padosoft\LaravelFlowAI\Nodes\BoundedAgentNode;
+use ReflectionClass;
 
 final class BoundedAgentNodeRegistrationTest extends TestCase
 {
@@ -53,5 +55,20 @@ final class BoundedAgentNodeRegistrationTest extends TestCase
         $node = $this->app->make(BoundedAgentNode::class);
 
         $this->assertInstanceOf(BoundedAgentNode::class, $node);
+    }
+
+    public function test_the_agent_gets_its_own_guarded_llm_client_not_the_prompt_nodes_shared_singleton(): void
+    {
+        // A shared LlmClient::class singleton would authorize/rate-limit
+        // this node's calls under 'ai.llm.prompt' instead of its own
+        // 'ai.agent.bounded' identity, letting a host's per-node-type
+        // guardrails silently misattribute one node's calls to the other.
+        $sharedPromptClient = $this->app->make(LlmClient::class);
+
+        $agent = $this->app->make(BoundedAgentNode::class);
+        $agentClientProperty = (new ReflectionClass($agent))->getProperty('client');
+        $agentClient = $agentClientProperty->getValue($agent);
+
+        $this->assertNotSame($sharedPromptClient, $agentClient);
     }
 }
