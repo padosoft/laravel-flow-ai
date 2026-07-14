@@ -130,7 +130,11 @@ final class FlowBuilderService
         $nodes = [];
 
         foreach ($nodesData as $nodeData) {
-            if (! is_array($nodeData)) {
+            // array_is_list() rejects a JSON ARRAY entry (e.g. "nodes":[[1,2]]),
+            // which decodes to the same PHP array shape is_array() alone
+            // accepts — a non-empty JSON array is never a valid node object
+            // per the requested schema.
+            if (! is_array($nodeData) || array_is_list($nodeData)) {
                 throw new InvalidArgumentException('Each "nodes" entry must be an object.');
             }
 
@@ -147,7 +151,8 @@ final class FlowBuilderService
         $connections = [];
 
         foreach ($connectionsData as $connectionData) {
-            if (! is_array($connectionData)) {
+            // Same rationale as the nodes loop above.
+            if (! is_array($connectionData) || array_is_list($connectionData)) {
                 throw new InvalidArgumentException('Each "connections" entry must be an object.');
             }
 

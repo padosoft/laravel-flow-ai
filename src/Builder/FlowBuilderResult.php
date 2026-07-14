@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI\Builder;
 
+use InvalidArgumentException;
 use Padosoft\LaravelFlow\Graph\GraphDefinition;
 
 /**
@@ -37,6 +38,10 @@ final readonly class FlowBuilderResult
      */
     public static function failed(array $errors): self
     {
+        if ($errors === []) {
+            throw new InvalidArgumentException('FlowBuilderResult::failed() requires at least one concrete error reason.');
+        }
+
         return new self(false, null, $errors);
     }
 }

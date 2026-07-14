@@ -111,6 +111,14 @@ final class FlowBuilderServiceTest extends TestCase
                 '{"nodes":["not-an-object"],"connections":[]}',
                 false,
             ],
+            'nodes entry is a JSON array, not an object' => [
+                '{"nodes":[[1,2,3]],"connections":[]}',
+                false,
+            ],
+            'connections entry is a JSON array, not an object' => [
+                '{"nodes":[{"id":"a","type":"test.source"}],"connections":[[1,2,3]]}',
+                false,
+            ],
         ];
     }
 
