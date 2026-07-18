@@ -31,7 +31,7 @@ jobs:
 
       # padosoft/laravel-flow is resolved as a normal tagged dependency from
       # Packagist (composer.json requires `^2.0`), so no sibling checkout of
-      # core is needed — `composer install` fetches the published release.
+      # core is needed — the composer step below fetches the published release.
 
       - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@v2

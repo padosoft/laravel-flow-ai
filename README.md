@@ -7,7 +7,7 @@
 
 ## Status
 
-🚧 **Under active development** — this package is part of the **Laravel Flow 2.0 program** and is not yet stable. APIs will change without notice until the first tagged minor release. Follow [padosoft/laravel-flow](https://github.com/padosoft/laravel-flow) for the core engine and roadmap.
+✅ **Stable (v1.0.0)** — the agentic AI layer of the **Laravel Flow 2.0** suite; from v1.0.0 the `@api` surface is covered by SemVer. Requires [padosoft/laravel-flow](https://github.com/padosoft/laravel-flow) `^2.0`.
 
 ## What it will provide
 
