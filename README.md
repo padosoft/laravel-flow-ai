@@ -25,13 +25,11 @@
 
 ## Installation
 
-> **Not yet installable this way.** `padosoft/laravel-flow` (this package's required dependency) has no tagged release yet — see the development-time note right below. The command below is the FUTURE installation path, once core tags its first release.
-
 ```bash
 composer require padosoft/laravel-flow-ai
 ```
 
-> **Development-time note**: `padosoft/laravel-flow` has no tagged release yet, so this package's `composer.json` resolves it via a local `path` repository pointing at `../padosoft-laravel-flow` (a true sibling checkout, one directory up from this package). This means `padosoft/laravel-flow-ai` is not `composer require`-able outside a monorepo-adjacent dev setup until core cuts its first tagged release — Composer's `repositories` block is only honored while developing directly on this package, not when it is installed as a dependency by a host application. Once core tags a release, this constraint switches to a normal SemVer version range and the path repository is removed.
+Requires [`padosoft/laravel-flow`](https://github.com/padosoft/laravel-flow) `^2.0`, which Composer resolves from Packagist automatically.
 
 ## Configuration
 
