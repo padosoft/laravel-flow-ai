@@ -14,7 +14,7 @@ namespace Padosoft\LaravelFlowAI\Mcp\Transport;
  */
 final class FakeMcpTransportFactory implements McpTransportFactory
 {
-    /** @var list<array{command: string, args: list<string>}> */
+    /** @var list<array{command: string, args: list<string>, env: array<string, string>}> */
     public array $requestedTransports = [];
 
     public function __construct(
@@ -26,9 +26,9 @@ final class FakeMcpTransportFactory implements McpTransportFactory
         return $this->transport;
     }
 
-    public function stdio(string $command, array $args): McpTransport
+    public function stdio(string $command, array $args, array $env = []): McpTransport
     {
-        $this->requestedTransports[] = ['command' => $command, 'args' => $args];
+        $this->requestedTransports[] = ['command' => $command, 'args' => $args, 'env' => $env];
 
         return $this->transport;
     }

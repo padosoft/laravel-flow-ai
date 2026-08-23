@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- **Delegated identity for bounded agents (`@api`)** — the run-time half of delegated access for AI agents (OAuth 2.0 Token Exchange, RFC 8693), with NO IAM dependency: this package owns the seam, an identity provider (reference: `padosoft/laravel-iam-agents`) plugs into it.
+  - `Contracts\DelegatedIdentityResolver` + `Identity\DelegatedIdentity`: an optional, host-bound resolver hands `Nodes\BoundedAgentNode` the identity the run acts under (`subject` = the user, `actor` = the agent, plus the short-lived delegated token). The token is a secret by construction — private property, `#[SensitiveParameter]`, redacted `__debugInfo()`; its ONLY egress is `environment()`, the env vars (`FLOW_DELEGATED_TOKEN`/`_SUBJECT`/`_ACTOR`) handed to the spawned MCP tool server. Unbound resolver = the pre-existing behavior, unchanged.
+  - `Identity\Exceptions\GrantRevokedException`: revocation is a fail-closed STOP. `BoundedAgentNode` halts on it BEFORE spawning the MCP server (spawn-time resolve) and BEFORE every subsequent tool call (per-iteration re-check) — mirroring the tool-allowlist "blocked before it happened" posture; an LLM call never happens on a grant already revoked.
+  - `Mcp\FlowToolServer::callTool()` no longer drops the transport-provided `$actor`: a verified `subject` in it becomes the run's persisted `flow_runs.subject` (requires core ≥ 2.1 with the run-subject feature), so MCP-initiated runs are attributable end-to-end.
+  - MCP stdio transport env handoff (`@internal` surface): `McpTransportFactory::stdio()` / `StdioMcpTransport` accept extra env vars, MERGED over the parent environment at `proc_open` (empty = plain inheritance, byte-for-byte the previous behavior) — the sanctioned channel for per-run credentials, which never enter run input, transcripts, prompts, or logs.
+
 ## [1.0.0] — 2026-07-18
 
 First stable release — the agentic AI layer for [`padosoft/laravel-flow`](https://github.com/padosoft/laravel-flow) (requires core `^2.0`).

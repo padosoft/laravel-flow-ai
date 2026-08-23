@@ -177,6 +177,34 @@ final class FlowToolServerTest extends TestCase
         $this->assertSame('hello', $decoded['a']['out']['message']);
     }
 
+    public function test_a_verified_actor_subject_is_persisted_on_the_run(): void
+    {
+        $this->publishEchoFlow('echo-flow');
+        $server = $this->allowAllServer(['echo-flow']);
+
+        $result = $server->callTool('echo-flow', ['message' => 'hello'], ['subject' => 'user:42']);
+
+        $this->assertFalse($result['isError']);
+        $run = DB::table('flow_runs')->where('definition_name', 'echo-flow')->first();
+        $this->assertNotNull($run);
+        $this->assertSame('user:42', $run->subject);
+    }
+
+    public function test_an_absent_or_unusable_actor_subject_leaves_the_run_subjectless(): void
+    {
+        $this->publishEchoFlow('echo-flow');
+        $server = $this->allowAllServer(['echo-flow']);
+
+        // No actor at all; an actor without a subject key; a non-string one.
+        $server->callTool('echo-flow', ['message' => 'a']);
+        $server->callTool('echo-flow', ['message' => 'b'], ['id' => 'client-1']);
+        $server->callTool('echo-flow', ['message' => 'c'], ['subject' => 42]);
+
+        $subjects = DB::table('flow_runs')->where('definition_name', 'echo-flow')->pluck('subject')->all();
+        $this->assertCount(3, $subjects);
+        $this->assertSame([null, null, null], $subjects);
+    }
+
     public function test_status_check_tool_is_denied_when_no_flow_is_visible(): void
     {
         // Deny-all authorizer, no exposed flows: listTools() would return []

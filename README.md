@@ -69,6 +69,18 @@ Pass `responseSchema` (a JSON Schema array) on `LlmRequest` to request structure
 
 The package binds `LlmClient` to `Padosoft\LaravelFlowAI\Llm\AnthropicDriver` by default. Swap the binding in your own service provider to point at a different implementation. `Padosoft\LaravelFlowAI\Llm\FakeDriver` — a deterministic, no-network driver constructed with a queue of canned `LlmResponse`s — is available for your own application's tests.
 
+## Delegated identity: agents that act on behalf of a user
+
+`BoundedAgentNode` can run under a **delegated identity** — the pairing of WHO the work is for (`subject`, e.g. `user:42`) and WHICH agent identity performs it (`actor`, e.g. `agent:01J…`), proven by a short-lived delegated access token (OAuth 2.0 Token Exchange, RFC 8693). This package owns the seam and depends on **no IAM package**; the reference provider is [`padosoft/laravel-iam-agents`](https://github.com/padosoft/laravel-iam-agents) on top of [`padosoft/laravel-iam-server`](https://github.com/padosoft/laravel-iam-server).
+
+Bind `Contracts\DelegatedIdentityResolver` (typically container-scoped, so each run resolves fresh) and the node does the rest:
+
+- at spawn, the resolved identity's env vars (`FLOW_DELEGATED_TOKEN`, `FLOW_DELEGATED_SUBJECT`, `FLOW_DELEGATED_ACTOR`) are handed to the spawned MCP tool server — process environment only, **never** run input (core persists `flow_runs.input` unredacted), transcripts, prompts, or logs;
+- before **every** tool call the grant is re-checked: a revocation landing mid-run throws `Identity\Exceptions\GrantRevokedException` and the node halts, fail-closed, *before* the call happens — the same posture as the tool allowlist;
+- no binding = no delegated identity = the pre-existing behavior, unchanged.
+
+`Mcp\FlowToolServer` closes the loop on the inbound side: a verified `subject` in the transport-provided `$actor` becomes the run's persisted `flow_runs.subject` (core ≥ 2.1), so a run started by an agent on a user's behalf is attributable end-to-end — in the run row, not smuggled through its input.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

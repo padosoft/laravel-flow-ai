@@ -6,7 +6,10 @@ namespace Padosoft\LaravelFlowAI\Tests\Unit\Nodes;
 
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Persistence\KeyBasedPayloadRedactor;
+use Padosoft\LaravelFlowAI\Contracts\DelegatedIdentityResolver;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
+use Padosoft\LaravelFlowAI\Identity\DelegatedIdentity;
+use Padosoft\LaravelFlowAI\Identity\Exceptions\GrantRevokedException;
 use Padosoft\LaravelFlowAI\Llm\FakeDriver;
 use Padosoft\LaravelFlowAI\Llm\LlmResponse;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
@@ -443,5 +446,106 @@ final class BoundedAgentNodeTest extends TestCase
         ])));
 
         $this->assertStringContainsString('Summarize flows.', $driver->requests()[0]->prompt);
+    }
+
+    /**
+     * @param  list<DelegatedIdentity|GrantRevokedException>  $script  consumed one per resolve() call; the last entry repeats
+     */
+    private function scriptedResolver(array $script): DelegatedIdentityResolver
+    {
+        return new class($script) implements DelegatedIdentityResolver
+        {
+            public function __construct(private array $script) {}
+
+            public function resolve(): ?DelegatedIdentity
+            {
+                $next = count($this->script) > 1 ? array_shift($this->script) : $this->script[0];
+
+                if ($next instanceof GrantRevokedException) {
+                    throw $next;
+                }
+
+                return $next;
+            }
+        };
+    }
+
+    private function identity(): DelegatedIdentity
+    {
+        return new DelegatedIdentity(subject: 'user:42', actor: 'agent:01J', token: 'tok-secret', grantId: 'dgr_1');
+    }
+
+    public function test_a_resolved_delegated_identity_reaches_the_mcp_server_as_process_env(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"final_answer","answer":"ok"}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $node = new BoundedAgentNode($driver, $mcp, identity: $this->scriptedResolver([$this->identity()]));
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertTrue($result->success);
+        $this->assertSame([
+            DelegatedIdentity::ENV_TOKEN => 'tok-secret',
+            DelegatedIdentity::ENV_SUBJECT => 'user:42',
+            DelegatedIdentity::ENV_ACTOR => 'agent:01J',
+        ], $mcp->requestedTransports[0]['env']);
+    }
+
+    public function test_without_a_resolver_the_mcp_server_env_stays_empty(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"final_answer","answer":"ok"}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $node = new BoundedAgentNode($driver, $mcp);
+
+        $node->execute($this->context($this->baseInputs()));
+
+        $this->assertSame([], $mcp->requestedTransports[0]['env']);
+    }
+
+    public function test_a_grant_already_revoked_at_spawn_halts_before_any_llm_call_or_subprocess(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"final_answer","answer":"never"}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $node = new BoundedAgentNode($driver, $mcp, identity: $this->scriptedResolver([new GrantRevokedException('dgr_1')]));
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertFalse($result->success);
+        $this->assertInstanceOf(GrantRevokedException::class, $result->error);
+        $this->assertSame('dgr_1', $result->error->grantId);
+        $this->assertSame(0, $driver->requestCount(), 'the LLM is never consulted on a revoked grant');
+        $this->assertSame([], $mcp->requestedTransports, 'no MCP server is ever spawned on a revoked grant');
+    }
+
+    public function test_a_revocation_landing_mid_run_halts_before_the_next_tool_call(): void
+    {
+        $driver = new FakeDriver([
+            new LlmResponse(content: '{"action":"call_tool","tool":"echo","arguments":{}}', model: 'claude-x', promptTokens: 1, completionTokens: 1),
+        ]);
+        $mcp = new FakeMcpTransportFactory;
+        $mcp->transport()->queueResult('initialize', []);
+        $mcp->transport()->queueResult('tools/list', ['tools' => []]);
+        $mcp->transport()->queueResult('tools/call', ['content' => [['type' => 'text', 'text' => 'never']], 'isError' => false]);
+        // Spawn-time resolve succeeds; the pre-tool-call re-check throws.
+        $resolver = $this->scriptedResolver([$this->identity(), new GrantRevokedException('dgr_1')]);
+        $node = new BoundedAgentNode($driver, $mcp, allowedTools: ['echo'], identity: $resolver);
+
+        $result = $node->execute($this->context($this->baseInputs()));
+
+        $this->assertFalse($result->success);
+        $this->assertInstanceOf(GrantRevokedException::class, $result->error);
+        $this->assertNotContains(
+            'tools/call',
+            array_column($mcp->transport()->requests, 'method'),
+            'the tool call was blocked before it happened',
+        );
     }
 }

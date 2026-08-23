@@ -14,9 +14,11 @@ use Padosoft\LaravelFlow\Node\FlowNodeHandler;
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Node\NodeResult;
 use Padosoft\LaravelFlow\Node\PortType;
+use Padosoft\LaravelFlowAI\Contracts\DelegatedIdentityResolver;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyDeniedException;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
+use Padosoft\LaravelFlowAI\Identity\Exceptions\GrantRevokedException;
 use Padosoft\LaravelFlowAI\Llm\LlmRequest;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolExecutionException;
@@ -98,6 +100,7 @@ final class BoundedAgentNode implements FlowNodeHandler
     /**
      * @param  list<string>  $allowedTools  empty = NO tool may be called (deny-by-default — unlike `PolicyEngine`'s "empty = unrestricted" gates, an unconfigured agent's own action surface defaults to nothing, not everything)
      * @param  float|null  $maxCostUsd  cost budget in USD; a no-op unless BOTH this and `$costPerThousandTokens` are set — `LlmResponse` carries token counts, not cost, so cost enforcement needs an explicit rate this package has no built-in pricing table for
+     * @param  DelegatedIdentityResolver|null  $identity  when bound (see the interface doc — null means no delegated identity, the pre-existing behavior), the resolved identity's env vars are handed to the spawned MCP server, and revocation halts the loop BEFORE the next tool call
      */
     public function __construct(
         private readonly LlmClient $client,
@@ -109,6 +112,7 @@ final class BoundedAgentNode implements FlowNodeHandler
         private readonly ?float $costPerThousandTokens = null,
         private readonly ?PolicyEngine $policy = null,
         private readonly ?PayloadRedactor $redactor = null,
+        private readonly ?DelegatedIdentityResolver $identity = null,
     ) {
         if ($this->maxIterations < 1) {
             throw new InvalidArgumentException("BoundedAgentNode maxIterations must be at least 1, got {$this->maxIterations}.");
@@ -152,7 +156,18 @@ final class BoundedAgentNode implements FlowNodeHandler
             }
         }
 
-        $client = new McpClient($this->transportFactory->stdio($command, $args));
+        // Resolve the delegated identity BEFORE spawning the MCP server: its
+        // env vars must be present at process spawn, and a grant already
+        // revoked at this point halts the node before any child process (or
+        // LLM call) ever starts — same "blocked before it happened" posture
+        // as the tool allowlist below.
+        try {
+            $identity = $this->identity?->resolve();
+        } catch (GrantRevokedException $e) {
+            return NodeResult::failed($e);
+        }
+
+        $client = new McpClient($this->transportFactory->stdio($command, $args, $identity?->environment() ?? []));
 
         try {
             return $this->runLoop($client, $task, $model, $systemPrompt);
@@ -266,6 +281,21 @@ final class BoundedAgentNode implements FlowNodeHandler
                     $tool,
                     "BoundedAgentNode: tool [{$tool}] is not in the configured allowlist; the call was blocked before it happened.",
                 ));
+            }
+
+            // Re-check the delegation grant BEFORE every tool call, not just
+            // at spawn: a revocation landing mid-run must halt the loop here
+            // (the spawned server may still hold the previous short-lived
+            // token until it expires — the TTL bounds that window — but no
+            // FURTHER action happens on a revoked grant). Same halting shape
+            // as the allowlist check above: fail-closed, blocked before it
+            // happened.
+            if ($this->identity !== null) {
+                try {
+                    $this->identity->resolve();
+                } catch (GrantRevokedException $e) {
+                    return NodeResult::failed($e);
+                }
             }
 
             try {

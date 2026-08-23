@@ -36,7 +36,7 @@ final class McpClientNodeTest extends TestCase
 
         $this->assertTrue($result->success);
         $this->assertSame([['type' => 'text', 'text' => '8']], $result->outputs['result']);
-        $this->assertSame(['command' => 'npx', 'args' => ['-y', 'calculator-mcp-server']], $factory->requestedTransports[0]);
+        $this->assertSame(['command' => 'npx', 'args' => ['-y', 'calculator-mcp-server'], 'env' => []], $factory->requestedTransports[0]);
 
         $callToolRequest = $factory->transport()->requests[array_key_last($factory->transport()->requests)];
         $this->assertSame(['name' => 'add', 'arguments' => ['a' => 5, 'b' => 3]], $callToolRequest['params']);
