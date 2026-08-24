@@ -79,7 +79,7 @@ Bind `Contracts\DelegatedIdentityResolver` (typically container-scoped, so each 
 - before **every** tool call the grant is re-checked: a revocation landing mid-run throws `Identity\Exceptions\GrantRevokedException` and the node halts, fail-closed, *before* the call happens — the same posture as the tool allowlist;
 - no binding = no delegated identity = the pre-existing behavior, unchanged.
 
-`Mcp\FlowToolServer` closes the loop on the inbound side: a verified `subject` in the transport-provided `$actor` becomes the run's persisted `flow_runs.subject` (core ≥ 2.1), so a run started by an agent on a user's behalf is attributable end-to-end — in the run row, not smuggled through its input.
+`Mcp\FlowToolServer` closes the loop on the inbound side: a verified `subject` in the transport-provided `$actor` becomes the run's persisted `flow_runs.subject` (core ≥ 2.2), so a run started by an agent on a user's behalf is attributable end-to-end — in the run row, not smuggled through its input.
 
 ## License
 
