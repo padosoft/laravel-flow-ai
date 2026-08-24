@@ -16,8 +16,8 @@ final class StdioMcpTransportFactory implements McpTransportFactory
         private readonly int $timeoutSeconds = 10,
     ) {}
 
-    public function stdio(string $command, array $args): McpTransport
+    public function stdio(string $command, array $args, array $env = []): McpTransport
     {
-        return new StdioMcpTransport($command, $args, $this->timeoutSeconds);
+        return new StdioMcpTransport($command, $args, $this->timeoutSeconds, $env);
     }
 }

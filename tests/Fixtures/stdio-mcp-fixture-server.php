@@ -64,6 +64,26 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
 
+    // Proves injected env vars actually reach the spawned subprocess (the
+    // credential-handoff seam): echoes back the value of ONE env var named
+    // by the caller, plus whether PATH survived the merge over the parent
+    // environment (proc_open's env parameter REPLACES the environment, so a
+    // wrong implementation would wipe everything the parent had).
+    if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'read_env') {
+        $name = is_string($arguments['name'] ?? null) ? $arguments['name'] : '';
+        fwrite(STDOUT, json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'result' => ['content' => [['type' => 'text', 'text' => json_encode([
+                'value' => getenv($name) === false ? null : getenv($name),
+                'path_survived' => getenv('PATH') !== false,
+            ], JSON_THROW_ON_ERROR)]], 'isError' => false],
+        ], JSON_THROW_ON_ERROR)."\n");
+        fflush(STDOUT);
+
+        continue;
+    }
+
     // Proves a blank line from the server is skipped, not mistaken for EOF.
     if ($method === 'tools/call' && ($arguments['mode'] ?? null) === 'blank_line_before_response') {
         fwrite(STDOUT, "\n");

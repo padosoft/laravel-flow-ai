@@ -57,11 +57,18 @@ final class StdioMcpTransport implements McpTransport
 
     /**
      * @param  list<string>  $args
+     * @param  array<string, string>  $env  extra environment variables MERGED over the
+     *                                      parent process environment for the spawned
+     *                                      child (empty = plain inheritance, exactly the
+     *                                      pre-existing behavior). See
+     *                                      {@see McpTransportFactory::stdio()} for the
+     *                                      credential-handoff rationale.
      */
     public function __construct(
         private readonly string $command,
         private readonly array $args = [],
         private readonly int $timeoutSeconds = 10,
+        private readonly array $env = [],
     ) {}
 
     /**
@@ -407,7 +414,14 @@ final class StdioMcpTransport implements McpTransport
             2 => ['pipe', 'w'],
         ];
 
-        $process = proc_open([$this->command, ...$this->args], $descriptors, $pipes);
+        // proc_open()'s env parameter REPLACES the child environment wholesale
+        // when given — so extra vars are merged over a snapshot of the parent
+        // environment (getenv() with no arguments), and `null` (plain
+        // inheritance) is kept for the empty case so the no-credentials path
+        // stays byte-for-byte the pre-existing behavior.
+        $environment = $this->env === [] ? null : [...getenv(), ...$this->env];
+
+        $process = proc_open([$this->command, ...$this->args], $descriptors, $pipes, null, $environment);
 
         if (! is_resource($process)) {
             throw new McpConnectionException("Failed to spawn MCP server process [{$this->command}].");

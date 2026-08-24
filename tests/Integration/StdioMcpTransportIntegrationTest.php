@@ -56,6 +56,24 @@ final class StdioMcpTransportIntegrationTest extends TestCase
         }
     }
 
+    public function test_injected_env_vars_reach_the_subprocess_merged_over_the_parent_environment(): void
+    {
+        [$command, $args] = $this->fixtureServerCommand();
+        $transport = new StdioMcpTransport($command, $args, timeoutSeconds: 5, env: ['FLOW_DELEGATED_TOKEN' => 'tok-integration']);
+        $client = new McpClient($transport);
+
+        try {
+            $content = $client->callTool('echo', ['mode' => 'read_env', 'name' => 'FLOW_DELEGATED_TOKEN']);
+            $decoded = json_decode($content[0]['text'], true, 512, JSON_THROW_ON_ERROR);
+
+            $this->assertSame('tok-integration', $decoded['value']);
+            // MERGED over the parent environment, never a replacement.
+            $this->assertTrue($decoded['path_survived']);
+        } finally {
+            $client->close();
+        }
+    }
+
     public function test_tool_is_error_over_a_real_subprocess_throws_the_typed_exception(): void
     {
         [$command, $args] = $this->fixtureServerCommand();

@@ -9,6 +9,7 @@ use Padosoft\LaravelFlow\Contracts\DefinitionRepository;
 use Padosoft\LaravelFlow\Contracts\RunRepository;
 use Padosoft\LaravelFlow\Executor\State\RunState;
 use Padosoft\LaravelFlow\Facades\Flow;
+use Padosoft\LaravelFlow\FlowExecutionOptions;
 use Padosoft\LaravelFlow\Graph\GraphSerializer;
 use Padosoft\LaravelFlow\Graph\StoredDefinition;
 use Padosoft\LaravelFlowAI\Contracts\McpToolAuthorizer;
@@ -148,7 +149,7 @@ final class FlowToolServer
         $graph = (new GraphSerializer)->fromArray($definition->graph);
 
         try {
-            $result = Flow::runGraph($graph, $arguments, null, $name);
+            $result = Flow::runGraph($graph, $arguments, $this->executionOptionsFor($actor), $name);
         } catch (Throwable $e) {
             // A throw out of the executor itself (not a node-level failure,
             // which the executor already turns into a Failed/PartiallySucceeded
@@ -179,6 +180,35 @@ final class FlowToolServer
             'content' => [['type' => 'text', 'text' => json_encode($result->nodeOutputs, JSON_THROW_ON_ERROR)]],
             'isError' => $result->state === RunState::PartiallySucceeded,
         ];
+    }
+
+    /**
+     * Maps the transport-provided `$actor` onto the run's execution options —
+     * the `subject` key, when present as a non-empty string, becomes the
+     * run's persisted `flow_runs.subject` (WHO the run acts for, e.g.
+     * `user:42`), so an MCP-initiated run is attributable end-to-end instead
+     * of anonymous.
+     *
+     * `$actor` is HOST-provided metadata (the transport wiring authenticates
+     * the caller and builds this array — the same trust already placed in it
+     * by every {@see McpToolAuthorizer} check above), never something the
+     * MCP caller controls directly: a `subject` here must come from a
+     * VERIFIED identity (e.g. the `sub` of an introspected delegated access
+     * token), not from tool-call params.
+     *
+     * @param  array<string, mixed>|null  $actor
+     */
+    private function executionOptionsFor(?array $actor): ?FlowExecutionOptions
+    {
+        $subject = $actor['subject'] ?? null;
+
+        if (! is_string($subject) || trim($subject) === '') {
+            // No verified subject -> no options object at all, keeping the
+            // actorless path byte-for-byte the pre-existing behavior.
+            return null;
+        }
+
+        return FlowExecutionOptions::make(subject: $subject);
     }
 
     /**
