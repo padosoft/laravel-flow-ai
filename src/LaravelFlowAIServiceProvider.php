@@ -19,8 +19,11 @@ use Padosoft\LaravelFlowAI\Advisor\Analyzers\FailureHotspotAnalyzer;
 use Padosoft\LaravelFlowAI\Advisor\Analyzers\RepeatedSegmentAnalyzer;
 use Padosoft\LaravelFlowAI\Advisor\Analyzers\UnusedToolAnalyzer;
 use Padosoft\LaravelFlowAI\Advisor\FlowAdvisor;
+use Padosoft\LaravelFlowAI\Bom\AiBom;
 use Padosoft\LaravelFlowAI\Builder\FlowBuilderService;
+use Padosoft\LaravelFlowAI\Console\Commands\AiBomCommand;
 use Padosoft\LaravelFlowAI\Console\Commands\ImproveFlowCommand;
+use Padosoft\LaravelFlowAI\Console\Commands\McpPinCommand;
 use Padosoft\LaravelFlowAI\Console\Commands\SuggestFlowsCommand;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Contracts\McpToolAuthorizer;
@@ -29,11 +32,14 @@ use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Llm\AnthropicDriver;
 use Padosoft\LaravelFlowAI\Mcp\Authorization\DenyAllMcpToolAuthorizer;
 use Padosoft\LaravelFlowAI\Mcp\FlowToolServer;
+use Padosoft\LaravelFlowAI\Mcp\Pinning\PinRegistry;
+use Padosoft\LaravelFlowAI\Mcp\Pinning\ToolPins;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 use Padosoft\LaravelFlowAI\Mcp\Transport\StdioMcpTransportFactory;
 use Padosoft\LaravelFlowAI\Nodes\BoundedAgentNode;
 use Padosoft\LaravelFlowAI\Nodes\LlmPromptNode;
 use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
+use Psr\Log\LoggerInterface;
 
 /**
  * @internal
@@ -106,6 +112,33 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
                 timeoutSeconds: is_numeric($mcpConfig['timeout_seconds'] ?? null) && (int) $mcpConfig['timeout_seconds'] >= 1
                     ? (int) $mcpConfig['timeout_seconds']
                     : 10,
+            );
+        });
+
+        // ONE shared PinRegistry across every node that opens an MCP
+        // session, for the same reason as the shared PolicyEngine above:
+        // pinning is one config surface governing every server this package
+        // spawns, and a per-node instance would only multiply the chance of
+        // two nodes disagreeing about what was approved.
+        $this->app->singleton(PinRegistry::class, fn (Container $app): PinRegistry => $this->pinRegistry($app));
+
+        $this->app->bind(AiBom::class, function (Container $app): AiBom {
+            $definitions = null;
+
+            try {
+                $definitions = $app->make(DefinitionRepository::class);
+            } catch (BindingResolutionException) {
+                // Same narrow catch as policyEngine()'s cache lookup: a
+                // harness with no flow persistence still gets a BOM, with
+                // the exposed flows marked unresolved rather than the whole
+                // document refusing to exist.
+            }
+
+            return new AiBom(
+                config: $app->make(ConfigRepository::class),
+                container: $app,
+                pins: $app->make(PinRegistry::class),
+                definitions: $definitions,
             );
         });
 
@@ -253,6 +286,47 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         return $host;
     }
 
+    /**
+     * Pinning defaults to `off`: it is a new control, and a package upgrade
+     * must never start failing a host's runs because a server they never
+     * pinned does not match pins they never wrote. An unrecognised mode
+     * throws from {@see PinRegistry}'s constructor rather than degrading to
+     * off — a typo in a security setting must be loud.
+     */
+    private function pinRegistry(Container $app): PinRegistry
+    {
+        /** @var array<string, mixed> $config */
+        $config = (array) $app->make(ConfigRepository::class)->get('laravel-flow-ai.mcp.pinning', []);
+
+        $servers = [];
+
+        foreach ((array) ($config['servers'] ?? []) as $serverId => $pins) {
+            if (! is_string($serverId) || ! is_array($pins)) {
+                continue;
+            }
+
+            $servers[PinRegistry::serverId($serverId)] = array_filter($pins, 'is_string');
+        }
+
+        $logger = null;
+
+        try {
+            $logger = $app->make(LoggerInterface::class);
+        } catch (BindingResolutionException) {
+            // Same narrow catch as the cache lookup below. `warn` mode
+            // without a logger cannot warn — which is why `warn` is
+            // documented as a migration setting and `enforce` is the one
+            // that does not depend on anything being wired.
+        }
+
+        return new PinRegistry(
+            mode: is_string($config['mode'] ?? null) ? $config['mode'] : ToolPins::MODE_OFF,
+            requirePins: (bool) ($config['require_pins'] ?? false),
+            servers: $servers,
+            logger: $logger,
+        );
+    }
+
     private function policyEngine(Container $app): PolicyEngine
     {
         /** @var array<string, mixed> $config */
@@ -326,6 +400,8 @@ final class LaravelFlowAIServiceProvider extends ServiceProvider
         $this->commands([
             SuggestFlowsCommand::class,
             ImproveFlowCommand::class,
+            AiBomCommand::class,
+            McpPinCommand::class,
         ]);
     }
 }

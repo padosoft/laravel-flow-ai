@@ -16,7 +16,9 @@ use Padosoft\LaravelFlowAI\Guardrails\PolicyDeniedException;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolExecutionException;
+use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolPinMismatchException;
 use Padosoft\LaravelFlowAI\Mcp\McpClient;
+use Padosoft\LaravelFlowAI\Mcp\Pinning\PinRegistry;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 
 /**
@@ -47,7 +49,11 @@ use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
  * never completed) and a tool-reported failure ({@see McpToolExecutionException}
  * — the call completed, the tool itself said no) both map to
  * `NodeResult::failed()`, but as DISTINGUISHABLE exception types, per this
- * subtask's own gate criterion.
+ * subtask's own gate criterion. A pin mismatch
+ * ({@see McpToolPinMismatchException} — the call was blocked because the
+ * server no longer offers the contracts that were approved) is the third,
+ * and maps the same way: a failed run an operator can see, not a silent
+ * exception escaping the node.
  *
  * Honors `$context->dryRun`: a dry run never spawns a process, returning
  * `NodeResult::dryRunSkipped()` instead.
@@ -79,10 +85,14 @@ final class McpClientNode implements FlowNodeHandler
     #[Output(type: PortType::Json)]
     public array $result;
 
+    /**
+     * @param  PinRegistry|null  $pins  when bound (the service provider always binds it; null keeps this node constructible by hand), the server's advertised tool contracts are verified against their pins before the call — a no-op unless `mcp.pinning.mode` is on
+     */
     public function __construct(
         private readonly McpTransportFactory $transportFactory,
         private readonly ?PolicyEngine $policy = null,
         private readonly ?PayloadRedactor $redactor = null,
+        private readonly ?PinRegistry $pins = null,
     ) {}
 
     public function execute(NodeContext $context): NodeResult
@@ -110,11 +120,14 @@ final class McpClientNode implements FlowNodeHandler
             }
         }
 
-        $client = new McpClient($this->transportFactory->stdio($command, $args));
+        $client = new McpClient(
+            $this->transportFactory->stdio($command, $args),
+            pins: $this->pins?->forServer($command, $args),
+        );
 
         try {
             $content = $client->callTool($tool, $arguments);
-        } catch (McpConnectionException|McpToolExecutionException $e) {
+        } catch (McpConnectionException|McpToolExecutionException|McpToolPinMismatchException $e) {
             return NodeResult::failed($e);
         } finally {
             $client->close();
