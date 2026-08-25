@@ -8,14 +8,17 @@ use Padosoft\LaravelFlow\Node\Attributes\FlowNode;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolExecutionException;
+use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolPinMismatchException;
+use Padosoft\LaravelFlowAI\Mcp\Pinning\PinViolation;
 use Padosoft\LaravelFlowAI\Nodes\McpClientNode;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 
 /**
- * Pins this package's `@api` MCP surface: the two DISTINGUISHABLE exception
+ * Pins this package's `@api` MCP surface: the DISTINGUISHABLE exception
  * types (F-PR4's own gate criterion — a flow author or a future Advisor
- * must be able to tell a connection failure from a tool-reported failure)
+ * must be able to tell a connection failure from a tool-reported failure,
+ * and both from a server that answered fine with contracts nobody approved)
  * and the `ai.mcp.tool` node type. Any future breaking change to this shape
  * must update this test in the same commit.
  */
@@ -30,6 +33,26 @@ final class McpClientContractTest extends TestCase
         self::assertTrue($tool->isSubclassOf(McpException::class));
         self::assertFalse($connection->isSubclassOf(McpToolExecutionException::class));
         self::assertFalse($tool->isSubclassOf(McpConnectionException::class));
+    }
+
+    public function test_pin_mismatch_is_a_third_distinguishable_failure_class(): void
+    {
+        $pin = new ReflectionClass(McpToolPinMismatchException::class);
+
+        self::assertTrue($pin->isSubclassOf(McpException::class));
+        self::assertFalse($pin->isSubclassOf(McpConnectionException::class));
+        self::assertFalse($pin->isSubclassOf(McpToolExecutionException::class));
+    }
+
+    public function test_pin_mismatch_carries_the_server_and_every_violation(): void
+    {
+        $exception = new McpToolPinMismatchException('npx server', [
+            PinViolation::contractChanged('search', 'sha256:a', 'sha256:b'),
+        ]);
+
+        self::assertSame('npx server', $exception->serverId);
+        self::assertCount(1, $exception->violations);
+        self::assertSame(PinViolation::CONTRACT_CHANGED, $exception->violations[0]->kind);
     }
 
     public function test_mcp_tool_execution_exception_carries_the_tools_raw_content(): void

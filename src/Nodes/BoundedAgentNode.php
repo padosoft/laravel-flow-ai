@@ -22,8 +22,10 @@ use Padosoft\LaravelFlowAI\Identity\Exceptions\GrantRevokedException;
 use Padosoft\LaravelFlowAI\Llm\LlmRequest;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpConnectionException;
 use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolExecutionException;
+use Padosoft\LaravelFlowAI\Mcp\Exceptions\McpToolPinMismatchException;
 use Padosoft\LaravelFlowAI\Mcp\FlowToolServer;
 use Padosoft\LaravelFlowAI\Mcp\McpClient;
+use Padosoft\LaravelFlowAI\Mcp\Pinning\PinRegistry;
 use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 use Padosoft\LaravelFlowAI\Nodes\Exceptions\AgentBudgetExhaustedException;
 use Padosoft\LaravelFlowAI\Nodes\Exceptions\AgentToolNotAllowedException;
@@ -101,6 +103,7 @@ final class BoundedAgentNode implements FlowNodeHandler
      * @param  list<string>  $allowedTools  empty = NO tool may be called (deny-by-default — unlike `PolicyEngine`'s "empty = unrestricted" gates, an unconfigured agent's own action surface defaults to nothing, not everything)
      * @param  float|null  $maxCostUsd  cost budget in USD; a no-op unless BOTH this and `$costPerThousandTokens` are set — `LlmResponse` carries token counts, not cost, so cost enforcement needs an explicit rate this package has no built-in pricing table for
      * @param  DelegatedIdentityResolver|null  $identity  when bound (see the interface doc — null means no delegated identity, the pre-existing behavior), the resolved identity's env vars are handed to the spawned MCP server, and revocation halts the loop BEFORE the next tool call
+     * @param  PinRegistry|null  $pins  when bound, the tool contracts the server advertises are verified against their pins before ANY of them reaches the model's prompt — a no-op unless `mcp.pinning.mode` is on
      */
     public function __construct(
         private readonly LlmClient $client,
@@ -113,6 +116,7 @@ final class BoundedAgentNode implements FlowNodeHandler
         private readonly ?PolicyEngine $policy = null,
         private readonly ?PayloadRedactor $redactor = null,
         private readonly ?DelegatedIdentityResolver $identity = null,
+        private readonly ?PinRegistry $pins = null,
     ) {
         if ($this->maxIterations < 1) {
             throw new InvalidArgumentException("BoundedAgentNode maxIterations must be at least 1, got {$this->maxIterations}.");
@@ -167,7 +171,10 @@ final class BoundedAgentNode implements FlowNodeHandler
             return NodeResult::failed($e);
         }
 
-        $client = new McpClient($this->transportFactory->stdio($command, $args, $identity?->environment() ?? []));
+        $client = new McpClient(
+            $this->transportFactory->stdio($command, $args, $identity?->environment() ?? []),
+            pins: $this->pins?->forServer($command, $args),
+        );
 
         try {
             return $this->runLoop($client, $task, $model, $systemPrompt);
@@ -184,6 +191,12 @@ final class BoundedAgentNode implements FlowNodeHandler
             // The initialize/tools/list handshake failing is the SAME class
             // of failure as a tools/call connection failure below — the
             // server is unreachable, never retried within this loop.
+            return NodeResult::failed($e);
+        } catch (McpToolPinMismatchException $e) {
+            // Halted here, before the FIRST prompt is built: a drifted tool
+            // description is an injection vector the moment it is rendered
+            // into renderIterationPrompt(), so the loop must not start at
+            // all rather than start with unapproved instructions in it.
             return NodeResult::failed($e);
         }
 
@@ -300,6 +313,15 @@ final class BoundedAgentNode implements FlowNodeHandler
 
             try {
                 $outcome = $this->callTool($client, $iteration, $tool, $arguments, $transcript);
+            } catch (McpToolPinMismatchException $e) {
+                // Defence in depth, and today unreachable: this node always
+                // verifies at describeAllowedTools() above, so the session
+                // is already verified by the time any tool is called. It is
+                // here so that a future change to WHEN the catalog is
+                // fetched cannot quietly turn a pin mismatch into an
+                // uncaught exception escaping the node instead of a failed
+                // run an operator can see.
+                return NodeResult::failed($e);
             } catch (McpConnectionException $e) {
                 // Unlike a tool-reported failure (caught inside callTool()
                 // and fed back into the transcript for the model to see),

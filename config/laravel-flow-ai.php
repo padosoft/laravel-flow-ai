@@ -70,6 +70,56 @@ return [
         // allowing McpToolAuthorizer to actually be visible; this is only
         // the candidate allowlist. Example: ['send-welcome-email'].
         'exposed_flows' => [],
+
+        /*
+        |----------------------------------------------------------------------
+        | Tool pinning
+        |----------------------------------------------------------------------
+        |
+        | An MCP server answers `tools/list` fresh on every handshake, and
+        | nothing in the protocol stops it from answering differently
+        | tomorrow. A tool whose DESCRIPTION quietly grows an extra
+        | instruction is, to a model, a different tool at the same name —
+        | the "rug pull". Pinning records the digest of each tool's contract
+        | (name, title, description, input/output schema, annotations) and
+        | compares it at every handshake.
+        |
+        | Generate the block below with:
+        |
+        |     php artisan flow:mcp-pin npx -y @scope/some-mcp-server
+        |
+        | and check live servers against it in CI with `--verify`.
+        |
+        */
+        'pinning' => [
+            // off     — no verification at all (default: this is a new
+            //           control, and turning it on must be a decision).
+            // warn    — verify and log mismatches, but let the call through.
+            //           A MIGRATION setting: run it long enough to learn
+            //           what actually drifts in your fleet, then move on.
+            // enforce — verify and block. A mismatch fails the node.
+            'mode' => env('LARAVEL_FLOW_AI_MCP_PINNING_MODE', 'off'),
+
+            // When true, a server with NO pinset at all is itself a
+            // violation. Leave false to adopt pinning server by server;
+            // turn it on once every server you spawn is pinned, and a
+            // mistyped server id below stops being silent.
+            'require_pins' => (bool) env('LARAVEL_FLOW_AI_MCP_REQUIRE_PINS', false),
+
+            // Server id => (tool name => digest). The server id is the
+            // COMMAND LINE the graph spawns, whitespace-collapsed — the
+            // same identity the egress allowlist above uses as
+            // `stdio:{command}`. A pinset means the catalog is CLOSED: a
+            // tool the server advertises that is not listed here is a
+            // violation, because a server that grew a tool nobody approved
+            // is not the server that was approved.
+            //
+            // 'npx -y @scope/some-mcp-server' => [
+            //     'search' => 'sha256:…',
+            //     'fetch'  => 'sha256:…',
+            // ],
+            'servers' => [],
+        ],
     ],
 
     /*

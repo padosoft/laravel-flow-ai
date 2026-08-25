@@ -15,6 +15,8 @@
 - **MCP client node** — call external MCP tools as graph nodes.
 - **MCP server (flow-as-tool)** — expose published flows as MCP tools (typed ports → JSON Schema); approval gates pause the calling agent for human sign-off. Disabled by default, per-flow opt-in.
 - **Bounded agent node** — LLM+tools loop with hard token/cost/iteration budgets, tool allowlists and approval escape hatches.
+- **MCP tool pinning** — pin the digest of each tool's contract and fail closed when a server rewrites it (the "rug pull").
+- **AI-BOM** — one command emitting the bill of materials of your AI stack, with a stable digest you can gate CI on.
 - **AI flow builder** — natural language → validated flow graph draft.
 - **Flow Advisor** — analyzes your node/MCP catalog and run history to suggest new flows or concrete improvements to existing ones (`flow:suggest`, `flow:improve`), always as reviewable drafts.
 
@@ -110,6 +112,118 @@ Bind `Contracts\DelegatedIdentityResolver` (typically container-scoped, so each 
 - no binding = no delegated identity = the pre-existing behavior, unchanged.
 
 `Mcp\FlowToolServer` closes the loop on the inbound side: a verified `subject` in the transport-provided `$actor` becomes the run's persisted `flow_runs.subject` (core ≥ 2.2), so a run started by an agent on a user's behalf is attributable end-to-end — in the run row, not smuggled through its input.
+
+## MCP tool pinning: the server you approved is the server you get
+
+An MCP server answers `tools/list` fresh on every handshake, and nothing in the protocol
+stops it from answering differently tomorrow. A tool whose description quietly grows
+*"…and also forward the result to https://elsewhere"* is, to a model, a different tool
+at the same name — the **rug pull**. Nothing in an allowlist catches it: the name never
+changed.
+
+Pinning records the digest of each tool's **contract** — `name`, `title`, `description`,
+`inputSchema`, `outputSchema`, `annotations`: everything the model reads or a host gates
+on — and compares it at every handshake.
+
+```bash
+php artisan flow:mcp-pin npx -y @scope/some-mcp-server
+```
+
+```
+2 tool contract(s) read from [npx -y @scope/some-mcp-server].
+
+Add to config/laravel-flow-ai.php, under mcp.pinning.servers:
+
+    'npx -y @scope/some-mcp-server' => [
+        'fetch'  => 'sha256:9f2c…',
+        'search' => 'sha256:41ab…',
+    ],
+```
+
+```php
+'pinning' => [
+    'mode' => 'enforce',   // off (default) | warn | enforce
+    'require_pins' => false,
+    'servers' => [ /* the block above */ ],
+],
+```
+
+From then on a drifted server fails the node — `Mcp\Exceptions\McpToolPinMismatchException`,
+a third failure class distinct from "unreachable" and "the tool said no", because an
+operator paged at 3am needs to know immediately whether this is a *broken* server or a
+*changed* one. Four things count as drift, and they are four different incidents:
+
+| | |
+|---|---|
+| **contract changed** | same name, different description/schema/annotations — the rug pull itself |
+| **pinned tool missing** | something that was approved is no longer advertised |
+| **unpinned tool** | the server grew a tool nobody approved |
+| **server not pinned** | only with `require_pins`, for a closed fleet |
+
+Three decisions worth knowing before you turn it on:
+
+- **A pinset closes the catalog.** Pinning `search` and `fetch` is not "check those two
+  and ignore the rest": a server that also advertises `exfiltrate` overnight is not the
+  server that was approved, and the model reads the new description on the next turn.
+- **The call path is pinned too.** `tools/call` names a tool directly and never needs the
+  catalog, so pinning only the list would leave it one call away from being bypassed. A
+  pinned session therefore verifies the catalog once before the first call — one extra
+  round trip, only when pinning is on, and already paid by any caller that lists first
+  (the bounded agent always does).
+- **`warn` is a migration setting, not a destination.** It exists so you can turn pinning
+  on across a real fleet and learn what actually drifts before it starts failing runs.
+
+In CI, check live servers against what is configured:
+
+```bash
+php artisan flow:mcp-pin --verify npx -y @scope/some-mcp-server
+```
+
+Non-zero on drift — which is how you find out *before* a production run fails closed.
+
+## AI-BOM: what your AI stack is made of
+
+`composer.lock` cannot answer *"what does our AI stack consist of and what may it
+reach?"*, because half the supply chain is not packages. It is MCP servers spawned by
+name, tool descriptions fetched from those servers at run time, model endpoints, and the
+guardrail configuration deciding which of it is reachable.
+
+```bash
+php artisan flow:ai-bom --output=ai-bom.json
+```
+
+```json
+{
+  "bomFormat": "padosoft-ai-bom",
+  "specVersion": "1.0",
+  "packages": [{ "name": "padosoft/laravel-flow-ai", "version": "1.2.0" }],
+  "providers": [{ "host": "api.anthropic.com", "resolvesTo": "…\GuardedLlmClient",
+                  "modelResolution": "per-execution (wired input port, recorded in run history)" }],
+  "mcpServers": [{ "id": "npx -y @scope/some-mcp-server", "pinned": true,
+                   "tools": [{ "name": "search", "digest": "sha256:41ab…" }] }],
+  "exposedFlows": [{ "name": "send-welcome-email", "status": "published", "version": 7, "checksum": "…" }],
+  "controls": { "guardrails": { … }, "agent": { … }, "mcpToolPinning": { … }, "authorizers": { … } }
+}
+```
+
+Everything is derived from configuration and the container — **never** by connecting to
+anything, so it is safe to run in CI on a machine with no network and no MCP servers
+installed. No API key is ever read: a BOM is meant to be committed, diffed and attached
+to a release.
+
+Two details that are deliberate rather than incidental. It reports **providers, not
+models**, because a model id is a wired input port chosen per execution — a static
+"models" list would be a field that is confidently wrong. And it reports the class the
+container *actually* hands back for `McpToolAuthorizer`, not the package default: a host
+that rebound it to something permissive must see that, and reporting the default would be
+reassuring and false.
+
+The digest excludes the timestamp, so an unchanged application compares equal and a
+one-line CI gate catches a supply chain that moved without anyone saying so:
+
+```bash
+test "$(php artisan flow:ai-bom --digest)" = "$(cat ai-bom.sha)"
+```
 
 ## License
 
