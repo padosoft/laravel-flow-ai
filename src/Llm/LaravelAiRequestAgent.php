@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Padosoft\LaravelFlowAI\Llm;
 
-use Laravel\Ai\AnonymousAgent;
+use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Contracts\HasTools;
+use Laravel\Ai\Promptable;
 
 /**
  * A throwaway `laravel/ai` agent carrying one {@see LlmRequest}'s options.
@@ -17,16 +19,37 @@ use Laravel\Ai\AnonymousAgent;
  * `temperature()` and `maxTokens()` supplies them per call, with no subclass per
  * combination of values.
  *
+ * It implements the SDK's contracts directly rather than extending
+ * `AnonymousAgent`: that class takes `(string $instructions, iterable $messages,
+ * iterable $tools)`, and narrowing those parameters to this class's own would
+ * break the constructor's contravariance — a subclass has to accept everything
+ * its parent accepts.
+ *
  * @internal Constructed by {@see LaravelAiDriver}; not part of this package's API.
  */
-final class LaravelAiRequestAgent extends AnonymousAgent
+final class LaravelAiRequestAgent implements Agent, HasTools
 {
+    use Promptable;
+
     public function __construct(
-        string $instructions,
+        private readonly string $instructions,
         private readonly float $temperature,
         private readonly int $maxTokens,
-    ) {
-        parent::__construct($instructions, [], []);
+    ) {}
+
+    public function instructions(): string
+    {
+        return $this->instructions;
+    }
+
+    /**
+     * A completion has no tools by design — see {@see maxSteps()}.
+     *
+     * @return iterable<mixed>
+     */
+    public function tools(): iterable
+    {
+        return [];
     }
 
     public function temperature(): float
