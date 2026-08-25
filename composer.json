@@ -3,7 +3,16 @@
     "description": "Agentic AI layer for padosoft/laravel-flow: LLM prompt nodes, MCP client and server (expose flows as MCP tools), bounded agent nodes, AI flow builder and Flow Advisor. Part of the Laravel Flow 2.0 suite.",
     "type": "library",
     "license": "Apache-2.0",
-    "keywords": ["laravel", "workflow", "ai", "llm", "mcp", "agents", "orchestration", "laravel-flow"],
+    "keywords": [
+        "laravel",
+        "workflow",
+        "ai",
+        "llm",
+        "mcp",
+        "agents",
+        "orchestration",
+        "laravel-flow"
+    ],
     "authors": [
         {
             "name": "Lorenzo Padovani",
@@ -19,7 +28,8 @@
         "laravel/pint": "^1.18",
         "orchestra/testbench": "^11.0",
         "phpstan/phpstan": "^2.0",
-        "phpunit/phpunit": "^11.5|^12.5"
+        "phpunit/phpunit": "^11.5|^12.5",
+        "laravel/ai": "^0.11"
     },
     "autoload": {
         "psr-4": {
@@ -52,5 +62,8 @@
             "@test"
         ],
         "test": "phpunit --testsuite All"
+    },
+    "suggest": {
+        "laravel/ai": "Bind LaravelAiDriver to reach every provider the official SDK supports, with failover and the 0.11 run events (per-step FinOps metering, delegation correlation) instead of one provider over raw HTTP."
     }
 }
