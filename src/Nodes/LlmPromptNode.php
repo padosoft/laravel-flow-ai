@@ -13,6 +13,7 @@ use Padosoft\LaravelFlow\Node\Attributes\Output;
 use Padosoft\LaravelFlow\Node\FlowNodeHandler;
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Node\NodeResult;
+use Padosoft\LaravelFlow\Node\PortProvenance;
 use Padosoft\LaravelFlow\Node\PortType;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyDeniedException;
@@ -47,7 +48,17 @@ use stdClass;
  * out, by whatever {@see LlmClient} this node was constructed with — a real
  * deployment binds `LlmClient::class` to a `Guardrails\GuardedLlmClient`
  * wrapping the actual provider driver, so this node never has to know policy
- * exists; it just calls `$this->client->complete()`.
+ * exists; it just calls `$this->client->complete()`. *
+ * Provenance: `$result` is `Untrusted` — a model completion is someone
+ * else's words, and an attacker who can influence anything the model read
+ * chose them. `$model` and `$systemPrompt` are `requiresTrusted`, which is
+ * the less obvious half: a graph that lets model output write the *system
+ * prompt* of a later call has handed the model authorship of its own
+ * instructions, and one that lets it choose the `$model` has handed it the
+ * choice of which provider receives the conversation. `$template` and
+ * `$variables` are deliberately left open — feeding a completion into a
+ * follow-up prompt is the ordinary summarise-then-refine chain, and it is
+ * not where authority leaks.
  *
  * @api
  */
@@ -63,10 +74,10 @@ final class LlmPromptNode implements FlowNodeHandler
     #[Input(type: PortType::Text, required: true)]
     public string $template = '';
 
-    #[Input(type: PortType::Text, required: true)]
+    #[Input(type: PortType::Text, required: true, requiresTrusted: true)]
     public string $model = '';
 
-    #[Input(type: PortType::Text, required: false)]
+    #[Input(type: PortType::Text, required: false, requiresTrusted: true)]
     public string $systemPrompt = '';
 
     /** @var array<string, mixed> */
@@ -74,7 +85,7 @@ final class LlmPromptNode implements FlowNodeHandler
     public array $variables = [];
 
     /** @var array<string, mixed> */
-    #[Output(type: PortType::Json)]
+    #[Output(type: PortType::Json, provenance: PortProvenance::Untrusted)]
     public array $result;
 
     /**

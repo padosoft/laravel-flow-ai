@@ -4,6 +4,24 @@ All notable changes to `padosoft/laravel-flow-ai` are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). From v1.0.0, SemVer applies to source classes annotated `@api`; `@internal` classes may change in any release.
 
+## [1.4.0] — 2026-08-26
+
+### Added
+
+- **Provenance labels on every AI node** — building on the taint model in `padosoft/laravel-flow` 2.4, each node now declares where its data's authority comes from, so a graph that lets a model decide what gets executed is **rejected at publish time** instead of discovered in an incident.
+  - **Untrusted outputs**: `ai.llm.prompt` → `result`, `ai.agent.bounded` → `result`, and `ai.mcp.tool` → `result`. A completion is someone else's words; so is a remote MCP server's response.
+  - **Sinks that refuse untrusted data** (`requiresTrusted`): `ai.mcp.tool`'s `command`, `args` and `tool`; `ai.agent.bounded`'s `command` and `args`; and — the less obvious half — `model` and `systemPrompt` on both LLM-facing nodes. A model that authors the next call's system prompt has been handed its own instructions, an escalation with no dangerous-looking function call in it anywhere.
+  - **`ai.mcp.tool`'s `arguments` is deliberately NOT a sink.** Filling in the parameters of a tool the author chose is what tool use is; forbidding it would only make the check the first thing people disable. The line drawn is: *the model may fill in parameters, never select the operation, the executable, or the instructions.* This is also why pinning matters — with the tool fixed by the author, the pin is what stops the server redefining what that tool does.
+  - Inside `ai.agent.bounded`'s loop the model still chooses tools and arguments, bounded by `$allowedTools` + `McpToolAuthorizer`. The analysis fixes what the GRAPH may connect; the allowlist fixes what the LOOP may reach. Neither replaces the other.
+
+### Changed
+
+- **Requires `padosoft/laravel-flow` `^2.4`** (was `^2.2.1`) for `Node\PortProvenance` and the `requiresTrusted` input flag.
+
+### Upgrade note
+
+An existing graph that wired model output into one of the sinks above will now **fail validation on publish**. That rejection is the feature, and the message names the full path from the originating source so the fix is findable. `php artisan flow:taint {definition}` reports the same thing without publishing, and exits non-zero, so it can gate CI first.
+
 ## [1.3.0] — 2026-08-26
 
 ### Added
