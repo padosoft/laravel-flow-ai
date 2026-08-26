@@ -181,6 +181,83 @@ php artisan flow:mcp-pin --verify npx -y @scope/some-mcp-server
 
 Non-zero on drift — which is how you find out *before* a production run fails closed.
 
+## Provenance: the model may fill in parameters, never choose the operation
+
+Pinning fixes *what a tool does*. This fixes *what may decide to call it*.
+
+Every node here now declares where its data's authority comes from, using the
+provenance model in `padosoft/laravel-flow` 2.4:
+
+| Port | Declaration | Why |
+| --- | --- | --- |
+| `ai.llm.prompt` → `result` | `Untrusted` | A completion is someone else's words. Anyone who can influence what the model read chose them. |
+| `ai.agent.bounded` → `result` | `Untrusted` | Model output informed by tool output: doubly so. |
+| `ai.mcp.tool` → `result` | `Untrusted` | A remote server's response is a remote server's words. |
+| `ai.mcp.tool` ← `command`, `args`, `tool` | `requiresTrusted` | These decide which process is spawned and which operation runs. |
+| `ai.agent.bounded` ← `command`, `args` | `requiresTrusted` | Same: which server gets spawned. |
+| `ai.llm.prompt` / `ai.agent.bounded` ← `model`, `systemPrompt` | `requiresTrusted` | Which provider receives the conversation, and who writes the instructions. |
+| `ai.mcp.tool` ← `arguments` | *deliberately open* | See below. |
+
+So this graph no longer validates — `GraphValidator` rejects it at publish
+time, before it can run once:
+
+```
+[ ai.llm.prompt ] --result--> [ ai.mcp.tool ] (args)
+
+Input [args] on node [mcp] requires trusted data but receives untrusted data
+originating at [llm.result] (path: llm.result -> mcp.args).
+```
+
+`args` is the argv of a spawned process. A model filling it in is arbitrary
+code execution, and it is type-compatible with the model's own output, so
+nothing else stood in the way.
+
+### Why `arguments` is deliberately left open
+
+Filling in the parameters of a tool **the graph author chose** is what tool
+use *is*. Forbidding it would not make anyone safer; it would make the check
+the first thing people switch off.
+
+The line this package draws is narrower and, we think, the right one:
+
+> **The model may fill in parameters. It may never select the operation, the
+> executable, or the instructions.**
+
+That is why pinning matters so much here. With the tool fixed by the author,
+the pin is what stops the server from quietly redefining what that tool
+*does* — the two features are halves of one guarantee, and neither is
+sufficient alone.
+
+### The subtle one: `systemPrompt`
+
+Nothing is executed when a model writes the next call's system prompt, which
+is exactly why it is easy to miss. A model that authors its own instructions
+has been handed the thing the instructions were there to constrain. It is an
+escalation with no dangerous-looking function call anywhere in it, and it is
+`requiresTrusted` for that reason.
+
+### Inside the agent loop is a different question
+
+`ai.agent.bounded` lets the model choose tools and arguments *within* its
+loop — that is what a bounded agent is. The bound there is `$allowedTools`
+plus `McpToolAuthorizer`, not this analysis. The two answer different
+questions:
+
+- the taint analysis fixes what the **graph** may connect,
+- the allowlist fixes what the **loop** may reach.
+
+Neither substitutes for the other, and a deployment that cares should set
+both.
+
+### Seeing it
+
+```bash
+php artisan flow:taint your-definition-name
+```
+
+Full model, including how to write a legitimate sanitizer:
+[Provenance and taint](https://doc.laravel-flow.padosoft.com/best-practices/provenance).
+
 ## AI-BOM: what your AI stack is made of
 
 `composer.lock` cannot answer *"what does our AI stack consist of and what may it

@@ -13,6 +13,7 @@ use Padosoft\LaravelFlow\Node\Attributes\Output;
 use Padosoft\LaravelFlow\Node\FlowNodeHandler;
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Node\NodeResult;
+use Padosoft\LaravelFlow\Node\PortProvenance;
 use Padosoft\LaravelFlow\Node\PortType;
 use Padosoft\LaravelFlowAI\Contracts\DelegatedIdentityResolver;
 use Padosoft\LaravelFlowAI\Contracts\LlmClient;
@@ -62,6 +63,17 @@ use stdClass;
  * Honors `$context->dryRun`: a dry run never calls the LLM or spawns the MCP
  * server, returning `NodeResult::dryRunSkipped()` instead.
  *
+ * Provenance: `$result` is `Untrusted` — it is a model completion informed
+ * by whatever the tools returned, so it is doubly someone else's words.
+ * `$model`, `$systemPrompt`, `$command` and `$args` are `requiresTrusted`:
+ * they choose the provider, write the agent's own instructions, and decide
+ * which server gets spawned. Inside the loop the model DOES choose tools
+ * and their arguments — that is what a bounded agent is for — and the
+ * bound is `$allowedTools` plus the {@see Mcp\Authorization\McpToolAuthorizer},
+ * not the taint analysis. The two guards answer different questions: the
+ * analysis fixes what the GRAPH may connect, the allowlist fixes what the
+ * LOOP may reach. Neither substitutes for the other.
+ *
  * @api
  */
 #[FlowNode(
@@ -78,25 +90,25 @@ final class BoundedAgentNode implements FlowNodeHandler
     #[Input(type: PortType::Text, required: true)]
     public string $task = '';
 
-    #[Input(type: PortType::Text, required: true)]
+    #[Input(type: PortType::Text, required: true, requiresTrusted: true)]
     public string $model = '';
 
-    #[Input(type: PortType::Text, required: false)]
+    #[Input(type: PortType::Text, required: false, requiresTrusted: true)]
     public string $systemPrompt = '';
 
     /** @var array<string, mixed> */
     #[Input(type: PortType::Json, required: false)]
     public array $variables = [];
 
-    #[Input(type: PortType::Text, required: true)]
+    #[Input(type: PortType::Text, required: true, requiresTrusted: true)]
     public string $command = '';
 
     /** @var list<string> */
-    #[Input(type: PortType::Json, required: false)]
+    #[Input(type: PortType::Json, required: false, requiresTrusted: true)]
     public array $args = [];
 
     /** @var array<string, mixed> */
-    #[Output(type: PortType::Json)]
+    #[Output(type: PortType::Json, provenance: PortProvenance::Untrusted)]
     public array $result;
 
     /**

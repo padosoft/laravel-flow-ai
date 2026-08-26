@@ -11,6 +11,7 @@ use Padosoft\LaravelFlow\Node\Attributes\Output;
 use Padosoft\LaravelFlow\Node\FlowNodeHandler;
 use Padosoft\LaravelFlow\Node\NodeContext;
 use Padosoft\LaravelFlow\Node\NodeResult;
+use Padosoft\LaravelFlow\Node\PortProvenance;
 use Padosoft\LaravelFlow\Node\PortType;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyDeniedException;
 use Padosoft\LaravelFlowAI\Guardrails\PolicyEngine;
@@ -55,6 +56,20 @@ use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
  * and maps the same way: a failed run an operator can see, not a silent
  * exception escaping the node.
  *
+ * Provenance: `$command`, `$args` and `$tool` are `requiresTrusted` — they
+ * decide WHICH process is spawned and WHICH operation runs, so a graph that
+ * lets model output reach them is rejected at publish time rather than
+ * discovered afterwards. `$arguments` deliberately is NOT: filling in the
+ * parameters of a tool the graph author chose is the whole point of tool
+ * use, and forbidding it would only teach people to turn the check off.
+ * The line is: **the model may fill in parameters, never select the
+ * operation or the executable.** That is why pinning ({@see Pinning\ToolPins})
+ * matters — with the tool fixed by the author, the pin is what stops the
+ * server from quietly redefining what that tool does.
+ *
+ * `$result` is `Untrusted`: an MCP tool's response is a remote server's
+ * words, exactly as much someone else's text as a model completion is.
+ *
  * Honors `$context->dryRun`: a dry run never spawns a process, returning
  * `NodeResult::dryRunSkipped()` instead.
  *
@@ -67,14 +82,14 @@ use Padosoft\LaravelFlowAI\Mcp\Transport\McpTransportFactory;
 )]
 final class McpClientNode implements FlowNodeHandler
 {
-    #[Input(type: PortType::Text, required: true)]
+    #[Input(type: PortType::Text, required: true, requiresTrusted: true)]
     public string $command = '';
 
     /** @var list<string> */
-    #[Input(type: PortType::Json, required: false)]
+    #[Input(type: PortType::Json, required: false, requiresTrusted: true)]
     public array $args = [];
 
-    #[Input(type: PortType::Text, required: true)]
+    #[Input(type: PortType::Text, required: true, requiresTrusted: true)]
     public string $tool = '';
 
     /** @var array<string, mixed> */
@@ -82,7 +97,7 @@ final class McpClientNode implements FlowNodeHandler
     public array $arguments = [];
 
     /** @var list<mixed> */
-    #[Output(type: PortType::Json)]
+    #[Output(type: PortType::Json, provenance: PortProvenance::Untrusted)]
     public array $result;
 
     /**
