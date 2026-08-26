@@ -196,7 +196,7 @@ php artisan flow:ai-bom --output=ai-bom.json
 {
   "bomFormat": "padosoft-ai-bom",
   "specVersion": "1.0",
-  "packages": [{ "name": "padosoft/laravel-flow-ai", "version": "1.2.0" }],
+  "packages": [{ "name": "padosoft/laravel-flow-ai", "version": "1.3.0" }],
   "providers": [{ "host": "api.anthropic.com", "resolvesTo": "…\GuardedLlmClient",
                   "modelResolution": "per-execution (wired input port, recorded in run history)" }],
   "mcpServers": [{ "id": "npx -y @scope/some-mcp-server", "pinned": true,

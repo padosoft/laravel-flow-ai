@@ -4,7 +4,7 @@ All notable changes to `padosoft/laravel-flow-ai` are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). From v1.0.0, SemVer applies to source classes annotated `@api`; `@internal` classes may change in any release.
 
-## [1.2.0] — 2026-08-25
+## [1.3.0] — 2026-08-26
 
 ### Added
 
@@ -19,6 +19,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 
 - `Mcp\McpClient` (`@internal`) accepts an optional `ToolPins`. Unset (the default) leaves every existing session byte-for-byte unchanged, with no extra round trip.
+
+## [1.2.0] — 2026-08-25
+
+### Added
+
+- **`Llm\LaravelAiDriver` (`@api`)** — an alternative `LlmClient` backed by the official [`laravel/ai`](https://github.com/laravel/ai) SDK (^0.11). `AnthropicDriver` speaks one provider's HTTP API directly, which is the right amount of machinery for one provider and the wrong amount for five: binding this driver instead changes nothing in the nodes and brings every provider the SDK supports (selected by config, not by swapping a class), failover already tested upstream, and the 0.11 run events — so `laravel-ai-finops` meters a node's spend per step and `laravel-iam-agents` stamps the run's invocation id onto the delegation context, with nothing added here.
+  - `Llm\LaravelAiRequestAgent` (`@internal`) is the seam that makes it work: the SDK declares generation options as CLASS attributes, but `TextGenerationOptions::forAgent()` reads a METHOD of the same name first — so temperature and max tokens vary per request without a subclass per combination.
+  - Two deliberate limits, documented in the class and the README: structured output is **instructed, not provider-enforced** (translating an arbitrary JSON Schema into the SDK's type objects would fail quietly — bind `AnthropicDriver` when the provider itself must refuse a non-conforming answer), and `maxSteps` is pinned to **1** (a node is a completion; the SDK default would let a prompt that happened to emit a tool call turn one node into a multi-step run the flow never authorised).
 
 ## [1.1.0] — 2026-08-24
 
